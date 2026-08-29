@@ -26,13 +26,13 @@
 ⑤ NodeItemNameConfirm.__call__(state) → 继承 NodeBase.__call__（先 add_running_task(session_id, name, is_stream)）
    → 进 process(state)：_step_4_extract_info 调 ChatOpenAI.invoke 抽 item_names / rewritten_query
    → _step_5_vectorize_and_query 生成向量并 create_hybrid_search_requests → hybrid_search(...)
-   → _step_6_align_item_names(匹配规则 a/b/c) → _step_7_check_confirmation → 写 state["item_names"]/state["answer"]
+   → _step_6_align_item_names(按匹配规则优先级) → _step_7_check_confirmation → 写 state["item_names"]/state["answer"]
 ⑥ 条件路由 _route_after_item_name_confirm(state)：state.get("answer") 有 → return "node_answer_output"（反问/拒答直接输出）；
    没有 → return "node_multi_search"
 ⑦ 节点 node_multi_search（lambda x: x 虚拟分叉点，状态原样传）→ 并行 add_edge 到
    node_search_embedding / node_search_embedding_hyde / node_web_search_mcp（三路各自写 embedding_chunks / hyde_embedding_chunks / web_search_docs）
 ⑧ 三路 add_edge 汇到 node_join（lambda x: {} 虚拟合并点，只汇控制流、无业务逻辑）
-⑨ node_join → node_rrf → NodeRrf.__call__(state) → NodeBase.__call__（log 开始/完成 + add_running_task）→ process(state)
+⑨ node_join → node_rrf → NodeRrf.__call__(state) → NodeBase.__call__（log 开始/完成 + add_running_task；process 异常则 log error 并 raise）→ process(state)
 ⑩ process 读 state.get('embedding_chunks')/('hyde_embedding_chunks')，各取 entity → rrf_inputs = [(list, 1.0), (list, 1.0)]
    → 调 self._rrf_merge(rrf_inputs)
 ⑪ _rrf_merge 内：遍历每路 + enumerate(rank, start=1) → chunk_scores[chunk_id] += weight/(k+rank)
@@ -69,7 +69,7 @@ def process(self, state: QueryGraphState) -> QueryGraphState:
 **手法② 加权 RRF 融合（`_rrf_merge` 整方法，逐行 + 反例）**：
 
 ```python
-def _rrf_merge(self, rrf_inputs, k: int = 60, max_results: int = None):
+def _rrf_merge(self, rrf_inputs, k: int = 60, max_results: int = None) -> List[Tuple[Dict[str, Any], float]]:
     chunk_scores = {}   # 每个 chunk_id 累计的 RRF 得分（跨两路融合）
     chunk_data = {}     # 每个 chunk_id 对应的文档（只保留第一次出现）
     for rrf_input, weight in rrf_inputs:            # 遍历每路：(该路文档列表, 该路权重)
@@ -122,7 +122,8 @@ mock_state = {
 }
 node = NodeRrf()
 result = node(mock_state)     # 走 NodeBase.__call__ → process → _rrf_merge
-# → result["rrf_chunks"]：chunk_1（两路都中）排最前，chunk_2 其次，chunk_3/chunk_4 依 rank 拼接；全是 dict，不含 score
+# → result["rrf_chunks"]：chunk_1（两路都中，1/61+1/61）排最前，chunk_2 其次（1/62+1/63），chunk_4 又其次（HyDE rank2=1/62），
+#   chunk_3 最后（向量 rank3=1/63）；全是 dict，不含 score（RRF 只比排名，顺序由分数决定，与召回先后无关）
 ```
 
 **触发回放**：在真实流里，输入两路召回（`embedding_chunks` + `hyde_embedding_chunks`）→ `NodeRrf.__call__` → `_rrf_merge` → 输出 `state['rrf_chunks']`（融合后的文档字典列表）→ `node_rerank._step_1_merge_multi_source_docs` 直接 `rrf_doc.get('content')` 取文——**下游拿到的是干净 dict**，正呼应③里"分离分数与文档"那一手的动机。
