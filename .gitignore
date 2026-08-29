@@ -1,0 +1,27 @@
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editors / IDEs
+.idea/
+.vscode/
+*.iml
+*.swp
+
+# Python (in case any test/perf scripts land here)
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.env
+.env.*
+
+# Node (if a plugin/scripts dir is added later)
+node_modules/
+dist/
+*.log
+
+# Notes / local scratch that should stay private
+NOTES/
+scratch/
