@@ -10,7 +10,7 @@
 
 ### 业务场景（具体到人、事、数值、期望）
 
-售后维修工程师小张在知识库问答页输入「怎么测这块主板的短路问题？」。系统先用 BGE-M3 向量检索（topK 约 60 条）和 HyDE 假设答案检索（topK 约 55 条）各召回一批结果。`node_rrf` 拿到 `embedding_chunks`、`hyde_embedding_chunks` 两路结果，要在毫秒级把两路的**排名**融成一套统一分数（RRF 平滑参数 `k=60`），重排后交给下游精排。
+售后维修工程师小张在知识库问答页输入「怎么测这块主板的短路问题？」。系统先用 BGE-M3 向量检索（topK 约 60 条）和 HyDE 假设答案检索（topK 约 55 条）各召回一批结果（BGE-M3=嵌入模型：把文本变向量、按向量相似度找相似文档；HyDE=先让 LLM 编一份"假设答案"、拿这份假设去检索，命中率更高）。`node_rrf` 拿到 `embedding_chunks`、`hyde_embedding_chunks` 两路结果，要在毫秒级把两路的**排名**融成一套统一分数（RRF 平滑参数 `k=60`），重排后交给下游精排。
 
 小张期望：两路都命中的「主板短路维修手册」排第一——既不让某一路没召回的好文档丢失，也不会因为两路的分数量纲不同而错排。
 
@@ -18,22 +18,22 @@
 
 ```text
 ① 用户输入「如何用万用表测量电压？」→ 构造 init_state = {"original_query": "..."}（main_graph.py 的 __main__）
-② KBQueryWorkflow() 构造：__init__ 依次 StateGraph(QueryGraphState) → _init_nodes() 创建 NodeRrf() 等实例
+② KBQueryWorkflow() 构造：__init__ 依次 StateGraph(QueryGraphState)（LangGraph 的"图"对象：把节点用边连起来按序执行；QueryGraphState=整条链共享的状态字典）→ _init_nodes() 创建 NodeRrf() 等实例
    → _register_nodes() 用 add_node("node_rrf", self.node_rrf) 注册 → _setup_routes() 设入口
    → _compiled_app = None（懒加载，首次执行才编译）
-③ workflow.run(initial_state, stream=True) → 未编译则 self.compile() → self.workflow.compile() → 得 _compiled_app
+③ workflow.run(initial_state, stream=True) → 未编译则 self.compile() → self.workflow.compile()（compile=把"图"编译成可执行对象）→ 得 _compiled_app
 ④ _compiled_app.stream(initial_state)（或 invoke）→ LangGraph 从 set_entry_point("node_item_name_confirm") 的入口节点开始
-⑤ NodeItemNameConfirm.__call__(state) → 继承 NodeBase.__call__（先 add_running_task(session_id, name, is_stream)）
-   → 进 process(state)：_step_4_extract_info 调 ChatOpenAI.invoke 抽 item_names / rewritten_query
+⑤ NodeItemNameConfirm.__call__(state) → 继承 NodeBase.__call__（__call__=Python 魔法方法：实例像函数一样被调用时走它——基类在这统一做日志/任务追踪，横切收敛；先 add_running_task(session_id, name, is_stream)）
+   → 进 process(state)：_step_4_extract_info 调 ChatOpenAI.invoke（LLM 客户端发起一次对话调用）抽 item_names / rewritten_query
    → _step_5_vectorize_and_query 生成向量并 create_hybrid_search_requests → hybrid_search(...)
    → _step_6_align_item_names(按匹配规则优先级) → _step_7_check_confirmation → 写 state["item_names"]/state["answer"]
-⑥ 条件路由 _route_after_item_name_confirm(state)：state.get("answer") 有 → return "node_answer_output"（反问/拒答直接输出）；
+⑥ 条件路由 _route_after_item_name_confirm(state)（条件路由=看 state 内容决定下一个节点走哪条边）：state.get("answer") 有 → return "node_answer_output"（反问/拒答直接输出）；
    没有 → return "node_multi_search"
 ⑦ 节点 node_multi_search（lambda x: x 虚拟分叉点，状态原样传）→ 并行 add_edge 到
    node_search_embedding / node_search_embedding_hyde / node_web_search_mcp（三路各自写 embedding_chunks / hyde_embedding_chunks / web_search_docs）
 ⑧ 三路 add_edge 汇到 node_join（lambda x: {} 虚拟合并点，只汇控制流、无业务逻辑）
 ⑨ node_join → node_rrf → NodeRrf.__call__(state) → NodeBase.__call__（log 开始/完成 + add_running_task；process 异常则 log error 并 raise）→ process(state)
-⑩ process 读 state.get('embedding_chunks')/('hyde_embedding_chunks')，各取 entity → rrf_inputs = [(list, 1.0), (list, 1.0)]
+⑩ process 读 state.get('embedding_chunks')/('hyde_embedding_chunks')，各取 entity（文档负载字段，见手法①内注释）→ rrf_inputs = [(list, 1.0), (list, 1.0)]
    → 调 self._rrf_merge(rrf_inputs)
 ⑪ _rrf_merge 内：遍历每路 + enumerate(rank, start=1) → chunk_scores[chunk_id] += weight/(k+rank)
    → chunk_data.setdefault(chunk_id, doc) 只留首版 → 聚合后按分降序 sorted(key=lambda x: x[1], reverse=True)
@@ -41,7 +41,7 @@
 ⑫ process 用 rrf_chunks = [doc for doc, _ in rrf_merge_results]（分离分数与文档）→ state['rrf_chunks'] = rrf_chunks
    → add_done_task(state.get("session_id"), self.name, state.get("is_stream")) → return state
 ⑬ node_rrf → node_rerank → NodeRerank.__call__ → _step_1_merge_multi_source_docs(state) 读 state.get("rrf_chunks")
-   → 断崖检测动态 Top-K 截断
+   → 断崖检测动态 Top-K 截断（"断崖"=相邻两名分数骤降的位置，在那里截掉后面低分文档；Top-K 不写死、由分数分布决定）
 ⑭ node_rerank → node_answer_output（组装 prompt → 生成 answer）→ END
 ```
 
@@ -49,27 +49,39 @@
 
 ### 实现 · 每个手法配代码逐行讲
 
-**手法① 多路取列表 + 兜底（`process` 前 6 行）**：
+**手法① 多路取列表 + 兜底 + 分离分数（`process` 整方法逐行）**：
 
 ```python
 def process(self, state: QueryGraphState) -> QueryGraphState:
+    # ---- 上半段：两路各取文档列表（多路 + 兜底）----
     embedding_search_list = [
-        doc.get('entity') for doc in (state.get('embedding_chunks') or []) if isinstance(doc, dict)
+        doc.get('entity')                                       # get('entity')=只取文档负载（检索结果每项是 {"entity": {...}} 字典）
+        for doc in (state.get('embedding_chunks') or [])        # or [] 兜底：某路搜索失败没写入时给空列表，保证能 for（反例：直接 state['embedding_chunks'] 遇 None 抛 KeyError/TypeError 整图崩）
+        if isinstance(doc, dict)                                # isinstance=判断元素是不是字典：混进 None/字符串就跳过（反例：不滤则 .get 直接崩）
     ]
     hyde_embedding_search_list = [
-        doc.get('entity') for doc in (state.get('hyde_embedding_chunks') or []) if isinstance(doc, dict)
+        doc.get('entity')
+        for doc in (state.get('hyde_embedding_chunks') or [])   # HyDE 路同上
+        if isinstance(doc, dict)
     ]
+    # 职责边界：只取向量/HyDE 两路、不取网络搜索——web 那路由下游 node_rerank 决定是否并入，此处只融「向量 + HyDE」（职责边界，不是遗漏）
+    rrf_inputs = [(embedding_search_list, 1.0), (hyde_embedding_search_list, 1.0)]   # 两路各带权重 1.0 打包
+    # ---- 下半段：融合 + 分离"分数"与"文档" ----
+    rrf_merge_results = self._rrf_merge(rrf_inputs)             # 融合本体在手法②展开
+    rrf_chunks = [doc for doc, _ in rrf_merge_results]          # 分离开：下游 node_rerank 只吃 dict（读 rrf_doc.get('content')）不要分数（反例：把 (doc, score) 元组塞回 state，rerank 拿到 tuple → .get 崩）
+    state['rrf_chunks'] = rrf_chunks
+    add_done_task(state.get("session_id"), self.name, state.get("is_stream"))   # 任务追踪收尾：基类 __call__ 开场 add_running_task，这里成对记"节点开始/完成"
+    return state
 ```
 
-- `state.get('embedding_chunks') or []`：**兜底防 None**。`embedding_chunks` 可能没被写入（某路搜索失败/为空），`or []` 保证下面能 `for`。**反例**：直接 `state['embedding_chunks']` 遇 None 抛 `KeyError`/TypeError，整图崩。
-- `doc.get('entity')`：检索结果里每项是 `{"entity": {...}, ...}` 的字典，这里只取 `entity`（真正的文档负载）。
-- `isinstance(doc, dict)`：**过滤非字典**。**反例**：混进 `None`/字符串时 `.get` 直接崩。
-- 为什么只取向量/HyDE 两路、**不取网络搜索**：注释明确"排除网络搜索（rerank 节点做）"——web 那路由下游 `node_rerank` 决定是否并入，此处融合只做「向量 + HyDE」，是**职责边界**。
+- 上半段三件事：`state.get(...) or []` **兜底防 None**（某路搜索失败没被写入时给空列表）、`doc.get('entity')` **只取文档负载**、`isinstance(doc, dict)` **过滤非字典**——反例都写在行注释里。
+- 下半段两件事：`doc for doc, _ in ...` **分离"分数"与"文档"**（下游只吃干净 dict）；`add_done_task` **任务追踪收尾**（横切，普通函数调用，与基类 `__call__` 的 `add_running_task` 成对记录"节点开始/完成"）。
 
 **手法② 加权 RRF 融合（`_rrf_merge` 整方法，逐行 + 反例）**：
 
 ```python
 def _rrf_merge(self, rrf_inputs, k: int = 60, max_results: int = None) -> List[Tuple[Dict[str, Any], float]]:
+    # k=RRF 平滑常数（把"排名"缓和平滑成分数：k=60 时 rank1 得 1/61）；max_results=None 表示不截断；返回 [(文档, RRF得分), ...]
     chunk_scores = {}   # 每个 chunk_id 累计的 RRF 得分（跨两路融合）
     chunk_data = {}     # 每个 chunk_id 对应的文档（只保留第一次出现）
     for rrf_input, weight in rrf_inputs:            # 遍历每路：(该路文档列表, 该路权重)
@@ -89,19 +101,6 @@ def _rrf_merge(self, rrf_inputs, k: int = 60, max_results: int = None) -> List[T
     return sorted_results[:max_results] if max_results else sorted_results
         # 动态截断：max_results=None 返回全量；否则取前 N。断崖截断交给下游 node_rerank，本节点只做融合。
 ```
-
-**手法③ 分离"分数"与"文档"（`process` 后半段）**：
-
-```python
-    rrf_merge_results = self._rrf_merge(rrf_inputs)
-    rrf_chunks = [doc for doc, _ in rrf_merge_results]   # 只取文档，不取 score
-    state['rrf_chunks'] = rrf_chunks
-    add_done_task(state.get("session_id"), self.name, state.get("is_stream"))
-    return state
-```
-
-- `doc for doc, _ in ...`：**分离开**——下游 `node_rerank` 只吃 `dict`（读 `rrf_doc.get('content')`），不要分数。**反例**：把整个 `(doc, score)` 元组塞回 `state['rrf_chunks']`，`node_rerank` 拿到的不是 dict 而是 tuple → `.get` 崩。
-- `add_done_task(session_id, name, is_stream)`：**任务追踪**（横切，普通函数调用）。基类 `__call__` 开场 `add_running_task`，这里 `add_done_task` 收尾，成对记录"节点开始/完成"。
 
 ### 用法 · 可照写的最小完整示例（来自 `node_rrf.py` 的 `__main__`）
 
@@ -126,7 +125,7 @@ result = node(mock_state)     # 走 NodeBase.__call__ → process → _rrf_merge
 #   chunk_3 最后（向量 rank3=1/63）；全是 dict，不含 score（RRF 只比排名，顺序由分数决定，与召回先后无关）
 ```
 
-**触发回放**：在真实流里，输入两路召回（`embedding_chunks` + `hyde_embedding_chunks`）→ `NodeRrf.__call__` → `_rrf_merge` → 输出 `state['rrf_chunks']`（融合后的文档字典列表）→ `node_rerank._step_1_merge_multi_source_docs` 直接 `rrf_doc.get('content')` 取文——**下游拿到的是干净 dict**，正呼应③里"分离分数与文档"那一手的动机。
+**触发回放**：在真实流里，输入两路召回（`embedding_chunks` + `hyde_embedding_chunks`）→ `NodeRrf.__call__` → `_rrf_merge` → 输出 `state['rrf_chunks']`（融合后的文档字典列表）→ `node_rerank._step_1_merge_multi_source_docs` 直接 `rrf_doc.get('content')` 取文——**下游拿到的是干净 dict**，正呼应手法①下半段"分离分数与文档"那一手的动机。
 
 **收尾洞察**：这个节点你从头到尾看不到任何"直接加相似度分数"的动作——它只用 `rank` 把多路"共识"提出来。这就是 RRF 这一类"融合排序"的通式：**多路召回 + 只比排名、不比原始分数**。再看一遍会发现：**业务节点里完全没有 RRF 公式的灵活性代码（k、权重、是否截断都不知道），只管"取列表 → 交给 `_rrf_merge` → 写回 state"——真正的算法收敛在 `_rrf_merge`，节点只做编排**。这比十句"单一职责"都直观。
 
