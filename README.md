@@ -93,8 +93,7 @@ skills/replicate-learning/
     ├── 批次讲解全文模板.md
     ├── AGENTS.md-模板.md
     ├── AGENTS.md-复刻增量模板.md
-    ├── 通用工程约定.md
-    └── 面试题卡模板.md
+    └── 通用工程约定.md
 ```
 
 ## 安装
