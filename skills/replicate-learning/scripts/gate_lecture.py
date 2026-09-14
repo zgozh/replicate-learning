@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-gate_lecture.py —— 批次讲解「内容真实性 + 注释密度 + 行号一致性」闸门（SKILL §6.4 C 组）
+gate_lecture.py —— 批次讲解「内容真实性 + 注释密度 + 行号一致性 + 用法与接入」闸门（SKILL §6.4 C 组）
+
+判据版本：见下方 GATE_VERSION。**任何判据变更（新增/收紧/放宽检查项或门槛）都必须**：
+  ① 递增 GATE_VERSION；② 在 SKILL §6.6 记一条变更（版本 / 改了什么 / 影响哪些批次 / 存量工单）；
+  ③ 跑回归集确认"不该变的批次判定不变"。道理：判据一改，存量批次会集体变红或变绿（实测两次：
+  加快照机制后 9 批 77 行由 FAIL 转为"源码演进"；加 ⑤ 后阶段8批次4 由全绿转红），没有版本号就查不出"这批是按哪版判的"。
 
 用法：
     python gate_lecture.py <批次讲解.md> --src <源码根目录>
@@ -48,6 +53,8 @@ import math
 import tarfile
 import subprocess
 import collections
+
+GATE_VERSION = "2.4"     # 2.4：新增 ⑤ 用法与接入（【怎么用】/【上下游】/【怎么接】/⑦.5）+ 用法片段免检边界
 
 # ── 归一化 ────────────────────────────────────────────────────────────────
 ANNO = re.compile(r"//\s*:L?(\d+(?:-\d+)?)[ \t]*(.*)$")
@@ -708,7 +715,7 @@ def main():
     snap_ok = load_snapshot(sha) if sha else False
 
     print("=" * 96)
-    print("批次讲解闸门（§6.4 C 组）:", os.path.basename(lec))
+    print("批次讲解闸门（§6.4 C 组）v%s:" % GATE_VERSION, os.path.basename(lec))
     print("源码根目录:", ROOT)
     if sha:
         print("源码快照: %s（%s）%s" % (sha, how, "" if snap_ok else "  ⚠️ 读取失败，退回只比当前树"))
