@@ -1,29 +1,41 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-gate_lecture.py —— 批次讲解「内容真实性 + 注释密度」闸门（SKILL §6.4 C 组）
+gate_lecture.py —— 批次讲解「内容真实性 + 注释密度 + 行号一致性」闸门（SKILL §6.4 C 组）
 
 用法：
-    python gate_lecture.py <批次讲解.md> --src <源码根目录> [--json out.json] [--verbose]
+    python gate_lecture.py <批次讲解.md> --src <源码根目录>
+        [--snapshot <commit>]   # 不传则自动读批头「源码依据：commit <sha>」
+        [--json out.json] [--verbose]
 
-三项检查（任一不过 = 退出码 1）：
+四项检查（任一不过 = 退出码 1）：
   ① 正向保真度：讲解里每个 java 代码块（凭类名归属源文件）的每一行代码，
-      必须能在对应源文件里逐字找到。门槛 100%。
-      —— 抓"讲解编造了源码里没有的代码"（SKILL §6.1 血证：某批仅 55.3%）。
-  ② 反向完整度：★类源文件的每一条有效行，必须出现在讲解里。门槛 99.5%。
-      —— 抓"摘录式贴码 / 整节缺失"。
+      必须能在「当前源码树」或「本批声明的源码快照」里逐字找到。
+      - 只在当前树命中 → 正常；
+      - 只在快照命中 → **源码演进**（本批之后该文件被重写）：不计 FAIL，单独打印漂移量；
+      - 两处都没有 → **候选编造/改写**：计 FAIL（这是本检查真正要抓的东西）。
+      - 批头未声明快照时，退回"只比当前树"，并在报告里提示"无法区分演进与编造"。
+  ② 反向完整度：★类源文件的每一条有效行，必须出现在讲解里（**全批所有块并集**）。门槛 99.5%。
+      —— 抓"摘录式贴码 / 整节缺失"。★ 记录在父标题（如 `### 6.5 Xxx★`）同样生效。
   ③ 注释密度：按 §6.1.1「关键行」口径算
       (a) 无注释连段 <8 行  (b) 教学注释条数 ≥ 关键行数÷12  (c) ★类每个方法签名行或相邻行有注释
       —— 抓"只贴 `// :Lnn` 裸行号、没有一句讲解"。
+  ④ 行号一致性（2026-09-15 新增）：`// :Lnn` 标了行号、且该行内容能在源文件里**唯一定位**时，
+      nn 必须就是那一行。指错行号 = FAIL（比少注释更误导初学者）。
 
 免检小节：标题含 手写 / No-Framework / 不用框架 / 等价实现 / 反例 / 对照 的代码块不参与 ①②，
 但会被统计并打印（防止借"反例"之名夹带未核实代码）。
+历史版本块：小节标题含「历史版本 / 历史快照 / 已被阶段」的块，**必须**用快照核验——块内每行都要在
+快照里找到（没声明快照 = 直接 FAIL），这样"标历史版本"就不能当免检后门用。
 """
+import io
 import os
 import re
 import sys
 import json
 import math
+import tarfile
+import subprocess
 import collections
 
 # ── 归一化 ────────────────────────────────────────────────────────────────
@@ -37,9 +49,17 @@ LICENSE_HINT = re.compile(r"(Licensed to the Apache|Apache License|WITHOUT WARRA
 EXEMPT = re.compile(
     r"(手写|No-Framework|不用框架|等价实现|反例|反面对照|对照实现|穿透卡|穿透|示例|演示|伪代码"
     r"|卡[一二三四五六七八九十0-9]|L0-L4|L1-L4|例 \d|Tiny|样例节选)", re.I)
+HIST = re.compile(r"(【历史版本|历史版本示例|历史快照|已被阶段\s*\d+)", re.I)
 CJK_LANGS = {"java", "sql", "yaml", "yml", "xml", "properties", "lua", "st", "json"}
 SKIP_DIRS = {"target", "node_modules", ".git", ".tmp_audit", ".tmp_lecture", ".workbuddy"}
 SPLIT_DECL = re.compile(r"\b(?:class|interface|enum|record)\s+([A-Z][A-Za-z0-9_]*)")
+SNAP_DECL = re.compile(r"(?:源码依据|源码快照|snapshot)[^\n]{0,40}?([0-9a-f]{7,40})")
+
+# ── 快照状态（进程级） ────────────────────────────────────────────────────
+SNAPSHOT = None          # commit sha
+SNAP_TAR = None          # git archive 出来的 tar 字节
+SNAP_UNION = None        # 快照里所有 .java 的归一化代码行集合
+_snap_file_cache = {}
 
 
 def strip_anno(line):
@@ -109,16 +129,33 @@ def is_key_line(line, in_license, in_text_block=False):
 
 
 # ── 讲解文件解析 ──────────────────────────────────────────────────────────
+def heading_chain(lines, start):
+    """从 start 往上取**真正的祖先标题链**（外层 → 最近）。
+    只收"层级严格更高"的标题：同级标题（如上一个 `### 6.5 Xxx★`）不属于本块的祖先，
+    否则 ★ 会串到别的节去（2026-09-15 修）。"""
+    chain, min_lv = [], 7
+    for i in range(start - 2, -1, -1):
+        m = re.match(r"^(#{2,5}) (.*)$", lines[i])
+        if m:
+            lv = len(m.group(1))
+            if lv < min_lv:
+                chain.append(m.group(2).strip())
+                min_lv = lv
+        if lines[i].startswith("# "):
+            break
+    chain.reverse()
+    return chain
+
+
 def parse_blocks(path):
-    """返回 (全部行, [(起始行号, 语言, 行列表, 所属小节标题, 所属一级节标题, 类名线索)])"""
+    """返回 (全部行, [(起始行号, 语言, 行列表, 所属小节标题, 所属一级节标题, 类名线索, 标题链)])"""
     lines = open(path, encoding="utf-8", errors="replace").read().split("\n")
     out, cur, lang, start = [], None, None, 0
-    # 预先算好每到一行的"最近一个含驼峰标识符的标题"，作为片段块的归属线索
     hint, hint_cur = {}, ""
     for i, l in enumerate(lines):
         if re.match(r"^#{2,5} ", l):
             ids = [w for w in re.findall(r"[A-Z][A-Za-z0-9_]{3,}", l)
-                   if not re.fullmatch(r"L\d+", w)]      # 排除 `:L142` 这类行号引用
+                   if not re.fullmatch(r"L\d+", w)]
             if ids:
                 hint_cur = " ".join(ids)
         hint[i + 1] = hint_cur
@@ -131,7 +168,8 @@ def parse_blocks(path):
             if re.match(r"^\s*`{3,}\s*$", l):
                 s3 = sect_of(lines, start, (3, 4, 5))
                 s2 = sect_of(lines, start, (2,))
-                out.append((start, lang, cur, s3 if s3 != "?" else s2, s2, hint.get(start, "")))
+                out.append((start, lang, cur, s3 if s3 != "?" else s2, s2,
+                            hint.get(start, ""), heading_chain(lines, start)))
                 cur = None
             else:
                 cur.append(l)
@@ -179,14 +217,24 @@ def _ns(path):
     return _NS_CACHE[path]
 
 
+def line_variants(n):
+    """讲解行的等价形态：原样 / 去掉行尾注释（教材旧格式形如 `代码  // 中文说明`）"""
+    yield n
+    head = n.split("//")[0].strip()
+    if head and head != n:
+        yield head
+
+
 def line_ok_in(path, n):
-    """该行是否属于源文件：先逐行比，再退化为"去空白子串"（容忍折行）"""
-    if n in src_code_set(path):
-        return True
-    ns = re.sub(r"\s+", "", n.split("//")[0])
-    if len(ns) < 8:
-        return False
-    return ns in _ns(path)
+    """该行是否属于源文件：先逐行比（含"去掉行尾注释"的等价形态），再退化为"去空白子串"（容忍折行）"""
+    sset = src_code_set(path)
+    for v in line_variants(n):
+        if v in sset:
+            return True
+        ns = re.sub(r"\s+", "", v)
+        if len(ns) >= 8 and ns in _ns(path):
+            return True
+    return False
 
 
 def attribute(code, classes, by_class, rev):
@@ -195,7 +243,6 @@ def attribute(code, classes, by_class, rev):
     for c in classes:
         pool_files += by_class.get(c, [])
     if not pool_files:
-        # 内容回退：逐行投票
         votes = collections.Counter()
         for x in code:
             for f in rev.get(x, {}):
@@ -238,6 +285,53 @@ def src_lines(path):
     return open(path, encoding="utf-8", errors="replace").read().split("\n")
 
 
+# ── 快照（本批声明的源码 commit） ─────────────────────────────────────────
+def load_snapshot(sha):
+    """把该 commit 的所有 .java 读成一个 tar 与"代码行并集"，用于区分「源码演进」与「编造」"""
+    global SNAPSHOT, SNAP_TAR, SNAP_UNION
+    data = subprocess.run(["git", "archive", "--format=tar", sha],
+                          cwd=ROOT, capture_output=True).stdout
+    if not data:
+        SNAPSHOT, SNAP_TAR, SNAP_UNION = sha, None, None
+        return False
+    union = set()
+    with tarfile.open(fileobj=io.BytesIO(data)) as tf:
+        for m in tf.getmembers():
+            if not m.isfile() or not m.name.endswith(".java"):
+                continue
+            for l in tf.extractfile(m).read().decode("utf-8", "replace").split("\n"):
+                n = norm_code(l)
+                if n and not CMT_LINE.match(n):
+                    union.add(n)
+    SNAPSHOT, SNAP_TAR, SNAP_UNION = sha, data, union
+    return True
+
+
+def resolve_snapshot(lines, explicit=None):
+    """快照来源：命令行 --snapshot > 批头声明「源码依据：commit <sha>」"""
+    if explicit:
+        return explicit, "命令行"
+    head = "\n".join(lines[:80])
+    m = SNAP_DECL.search(head)
+    return (m.group(1), "批头声明") if m else (None, None)
+
+
+def snap_file_lines(rel):
+    """快照里某个文件的代码行（按需从 tar 取，带缓存）"""
+    if rel in _snap_file_cache:
+        return _snap_file_cache[rel]
+    got = None
+    if SNAP_TAR:
+        want = rel.replace("\\", "/")
+        with tarfile.open(fileobj=io.BytesIO(SNAP_TAR)) as tf:
+            for m in tf.getmembers():
+                if m.isfile() and m.name == want:
+                    got = tf.extractfile(m).read().decode("utf-8", "replace").split("\n")
+                    break
+    _snap_file_cache[rel] = got
+    return got
+
+
 # ── 检查 ①：正向保真度 ───────────────────────────────────────────────────
 def is_exempt(sect, h2):
     """免检判定：小节名或所属一级节名命中免检词，或属于 ⑨ No-Framework 节下的 ### 9.x"""
@@ -248,16 +342,24 @@ def is_exempt(sect, h2):
     return False
 
 
+def is_hist(sect, chain=None):
+    """历史版本块：必须用快照核验（不能当免检后门）。
+    判定只看"块自身标题或任一祖先标题"是否显式声明历史版本（如【历史版本示例】/ 已被阶段N 重写）。"""
+    if HIST.search(sect or ""):
+        return True
+    return any(HIST.search(h) for h in (chain or []))
+
+
 def check_fidelity(blocks, by_class, rev):
     rows = []
-    for start, lang, bl, sect, h2, hint in blocks:
+    for start, lang, bl, sect, h2, hint, chain in blocks:
         if lang != "java":
             continue
         text = "\n".join(bl)
-        # 类名线索 = 块内 class 声明 + 小节标题驼峰标识符 + 最近含类名的标题（片段块靠后两者归属）
-        # 注意排除 `L142` 这类"行号引用"（它也满足驼峰正则，会带偏归属）
+
         def _ids(t):
             return [w for w in re.findall(r"[A-Z][A-Za-z0-9_]{3,}", t) if not re.fullmatch(r"L\d+", w)]
+
         classes = SPLIT_DECL.findall(text)
         if not classes:
             classes = _ids(sect) or _ids(hint)
@@ -266,23 +368,45 @@ def check_fidelity(blocks, by_class, rev):
         if len(code) < 5:
             continue
         cand, lost = attribute(code, classes, by_class, rev)
+        # 快照分类：只在快照里命中 = 源码演进；两处都不在 = 候选编造
+        snap_lost = None
+        if lost is not None and SNAP_UNION is not None:
+            snap_lost = [c for c in lost if c not in SNAP_UNION]
+        hist = is_hist(sect, chain)
         rows.append(dict(start=start, sect=sect, h2=h2, lang=lang, classes=classes,
-                         n_code=len(code), exempt=is_exempt(sect, h2),
+                         n_code=len(code), exempt=is_exempt(sect, h2), hist=hist,
                          cand=os.path.relpath(cand, ROOT) if cand else None,
                          lost=len(lost) if lost is not None else None,
-                         lost_samples=(lost[:4] if lost else [])))
+                         lost_samples=(lost[:4] if lost else []),
+                         snap_lost=len(snap_lost) if snap_lost is not None else None,
+                         snap_lost_samples=(snap_lost[:4] if snap_lost else []),
+                         evolve=(len(lost) - len(snap_lost)) if (lost is not None and snap_lost is not None) else None))
     return rows
+
+
+def block_star(sect, chain):
+    """该块是否算 ★ 类：块自己标题带 ★，或任意父标题带 ★（2026-09-15 修：此前只看最近标题，
+    ★ 标在 `### 6.5 Xxx★` 而块在 `#### 6.5.A` 下时，② 会静默空转）"""
+    return "★" in (sect or "") or any("★" in h for h in (chain or []))
 
 
 # ── 检查 ②：反向完整度（★类） ────────────────────────────────────────────
 def check_reverse(blocks, lines, by_class):
-    """★类 = 小节标题里带 ★ 且能提取到类名的代码块"""
+    """★类 = 标题（自身或任一父标题）带 ★ 且能提取到类名的代码块"""
     rows = []
-    for start, lang, bl, sect, h2, hint in blocks:
-        if lang != "java" or "★" not in sect:
+    lect_all = set()
+    for blk in blocks:
+        for x in blk[2]:
+            n = norm_code(x)
+            if n:
+                lect_all.add(n)
+    for start, lang, bl, sect, h2, hint, chain in blocks:
+        if lang != "java" or not block_star(sect, chain):
             continue
         if is_exempt(sect, h2):
             continue          # 样例节选 / 手写版等免检块不参与 ★完整性（它们本就不是整文件）
+        if is_hist(sect, chain):
+            continue          # 历史版本块由 ① 按快照核验，不拿当前树做反向覆盖
         classes = find_classes("\n".join(bl))
         if not classes:
             continue
@@ -291,20 +415,20 @@ def check_reverse(blocks, lines, by_class):
             if not cands:
                 continue
             p = cands[0]
-            lect = set()
-            for blk in blocks:
-                for x in blk[2]:
-                    n = norm_code(x)
-                    if n:
-                        lect.add(n)
             real, miss = 0, []
+            lect_ns = [re.sub(r"\s+", "", v) for v in lect_all]
             for sl in src_lines(p):
                 t = norm_code(sl)
                 if not t or CMT_LINE.match(t) or t.startswith(("import ", "package ")) or PUNCT_ONLY.match(t):
                     continue
                 real += 1
-                if t not in lect:
-                    miss.append(t)
+                if t in lect_all:
+                    continue
+                # 容忍等价形态：折行拼接 / 行尾带教材注释
+                ts = re.sub(r"\s+", "", t)
+                if len(ts) >= 8 and any(ts in v for v in lect_ns):
+                    continue
+                miss.append(t)
             cov = (real - len(miss)) / real if real else 1.0
             rows.append(dict(cls=c, src=os.path.relpath(p, ROOT), sect=sect,
                              real=real, miss=len(miss), cov=round(cov, 4),
@@ -315,11 +439,10 @@ def check_reverse(blocks, lines, by_class):
 # ── 检查 ③：注释密度 ─────────────────────────────────────────────────────
 def check_density(blocks):
     rows = []
-    for start, lang, bl, sect, h2, hint in blocks:
+    for start, lang, bl, sect, h2, hint, chain in blocks:
         if lang not in CJK_LANGS or len(bl) < 5:
             continue
         exempt = is_exempt(sect, h2)
-        # 许可证头检测：package/import 之前的块注释
         in_lic, seen_pkg = False, False
         keys = []
         tb = mark_text_block_lines(bl)
@@ -327,8 +450,6 @@ def check_density(blocks):
             code, _ = strip_anno(ln)
             if code.strip().startswith(("package ", "import ")):
                 seen_pkg = True
-            # 许可证头：只有真的出现 license 文本才进入；遇到块注释结束符立即退出
-            # （否则"以 /* 开头的片段块"——比如节选样例——会被整块误判为许可证头而跳过密度检查）
             if LICENSE_HINT.search(code):
                 in_lic = True
             if in_lic and "*/" in code:
@@ -339,7 +460,6 @@ def check_density(blocks):
                 continue
             keys.append((ln, has_cjk_comment(ln)))
         key_n = len(keys)
-        # (a) 无注释连段
         mx, cur, runs = 0, 0, 0
         for _, ok in keys:
             if ok:
@@ -352,15 +472,66 @@ def check_density(blocks):
         if cur >= 8:
             runs += 1
         mx = max(mx, cur)
-        # (b) 教学注释条数
         cmts = sum(1 for _, ok in keys if ok)
-        need = max(5, math.ceil(key_n / 12)) if ("★" in sect) else math.ceil(key_n / 12)
+        need = max(5, math.ceil(key_n / 12)) if "★" in sect else math.ceil(key_n / 12)
         rows.append(dict(start=start, sect=sect, exempt=exempt, key_lines=key_n,
                          comments=cmts, max_run=mx, bad_runs=runs,
                          need=need, star=("★" in sect)))
     return rows
 
 
+# ── 检查 ④：行号一致性 ───────────────────────────────────────────────────
+def check_lineno(blocks, by_class, rev):
+    """`// :Lnn` 的行号是否指向该行内容真正所在的行。
+    只在"该行内容能在源文件里唯一定位"时才判定（折行/压缩行、重复行、公共符号行跳过）。"""
+    rows = []
+    for start, lang, bl, sect, h2, hint, chain in blocks:
+        if lang != "java" or is_exempt(sect, h2):
+            continue
+        classes = SPLIT_DECL.findall("\n".join(bl))
+        if not classes:
+            ids = [w for w in re.findall(r"[A-Z][A-Za-z0-9_]{3,}", sect) if not re.fullmatch(r"L\d+", w)]
+            if not ids:
+                ids = [w for w in re.findall(r"[A-Z][A-Za-z0-9_]{3,}", hint) if not re.fullmatch(r"L\d+", w)]
+            classes = ids
+        code = [norm_code(x) for x in bl]
+        code = [c for c in code if c and not CMT_LINE.match(c)]
+        if len(code) < 5:
+            continue
+        cand, _ = attribute(code, classes, by_class, rev)
+        if cand is None:
+            continue
+        base = None
+        if is_hist(sect, chain) and SNAPSHOT:
+            base = snap_file_lines(os.path.relpath(cand, ROOT))
+        src = base if base is not None else src_lines(cand)
+        idx = collections.defaultdict(list)
+        for i, l in enumerate(src):
+            n = norm_code(l)
+            if n:
+                idx[n].append(i + 1)
+        bad = []
+        checked = 0
+        for x in bl:
+            m = ANNO.search(x)
+            if not m:
+                continue
+            n = norm_code(x)
+            if len(n) < 8 or PUNCT_ONLY.match(n):
+                continue
+            where = idx.get(n, [])
+            if len(where) != 1:
+                continue                       # 无法唯一定位 → 不判定（折行/重复行）
+            checked += 1
+            want = int(m.group(1).split("-")[0])
+            if want != where[0]:
+                bad.append((want, where[0], n[:70]))
+        rows.append(dict(start=start, sect=sect, src=os.path.relpath(cand, ROOT),
+                         checked=checked, bad=len(bad), samples=bad[:3]))
+    return rows
+
+
+# ── 主流程 ───────────────────────────────────────────────────────────────
 def main():
     global ROOT
     if len(sys.argv) < 2:
@@ -369,9 +540,12 @@ def main():
     lec = sys.argv[1]
     root = "."
     verbose = "--verbose" in sys.argv
-    jout = None
+    explicit_snap = None
     if "--src" in sys.argv:
         root = sys.argv[sys.argv.index("--src") + 1]
+    if "--snapshot" in sys.argv:
+        explicit_snap = sys.argv[sys.argv.index("--snapshot") + 1]
+    jout = None
     if "--json" in sys.argv:
         jout = sys.argv[sys.argv.index("--json") + 1]
     ROOT = os.path.abspath(root)
@@ -380,40 +554,61 @@ def main():
         print("找不到讲解文件：", lec)
         return 2
     lines, blocks = parse_blocks(lec)
-    by_class, rev = index_sources(ROOT)
+    by_class, rev_index = index_sources(ROOT)
+
+    sha, how = resolve_snapshot(lines, explicit_snap)
+    snap_ok = load_snapshot(sha) if sha else False
 
     print("=" * 96)
     print("批次讲解闸门（§6.4 C 组）:", os.path.basename(lec))
     print("源码根目录:", ROOT)
+    if sha:
+        print("源码快照: %s（%s）%s" % (sha, how, "" if snap_ok else "  ⚠️ 读取失败，退回只比当前树"))
+    else:
+        print("源码快照: 未声明（批头应写「源码依据：commit <sha>」）→ 无法区分「源码演进」与「编造」")
     print("=" * 96)
 
     # ① 正向
-    fid = check_fidelity(blocks, by_class, rev)
+    fid = check_fidelity(blocks, by_class, rev_index)
     chk = [r for r in fid if not r["exempt"]]
     tot = sum(r["n_code"] for r in chk)
-    lost = sum(r["n_code"] if r["lost"] is None else r["lost"] for r in chk)   # 注意：不能用 `or`，0 是合法值
+    # FAIL 基准：有快照时看"两处都没有"的行；无快照时退回"当前树不命中"
+    def fail_lines(r):
+        if r["lost"] is None:
+            return r["n_code"]
+        if is_hist(r["sect"], None) and r["snap_lost"] is not None:
+            return r["snap_lost"]
+        return r["snap_lost"] if r["snap_lost"] is not None else r["lost"]
+
+    lost = sum(fail_lines(r) for r in chk)
+    drift = sum((r["lost"] or 0) - (r["snap_lost"] or 0) for r in chk
+                if r["lost"] is not None and r["snap_lost"] is not None)
     unattr = [r for r in chk if r["lost"] is None]
-    print(f"\n① 正向保真度：{len(chk)} 个代码块 / {tot} 行代码 → 不命中 {lost} 行 "
+    print(f"\n① 正向保真度：{len(chk)} 个代码块 / {tot} 行代码 → 候选不符 {lost} 行 "
           f"= 保真度 {100.0*(tot-lost)/tot if tot else 100:.1f}%  "
           f"{'PASS' if lost == 0 and not unattr else 'FAIL'}")
+    if drift:
+        print(f"   （其中 {drift} 行属【源码演进】：只在本批快照里命中，当前树已重写——不计 FAIL，但需在小节标题标【历史版本示例】）")
     for r in chk:
         if r["lost"] is None:
             print(f"   ! 无法归属源文件  {os.path.basename(lec)}:{r['start']}  {r['sect']}")
-        elif r["lost"]:
-            print(f"   ! 不命中 {r['lost']}/{r['n_code']} 行  :{r['start']}  {r['sect']}")
+        elif fail_lines(r):
+            print(f"   ! 候选不符 {fail_lines(r)}/{r['n_code']} 行  :{r['start']}  {r['sect']}"
+                  + ("  【历史版本块，按快照核验】" if r["hist"] else ""))
             print(f"     归属 = {r['cand']}")
-            for s in r["lost_samples"]:
-                print(f"       源码里没有: {s[:88]}")
+            why = "源码与快照里都没有" if r["snap_lost"] is not None else "源码里没有（未声明快照，无法判断是演进还是编造）"
+            for s in (r["snap_lost_samples"] or r["lost_samples"]):
+                print(f"       {why}: {s[:88]}")
     ex = [r for r in fid if r["exempt"]]
     if ex:
         print(f"   （免检小节 {len(ex)} 个代码块 / {sum(r['n_code'] for r in ex)} 行："
               f"{', '.join(sorted({r['sect'] for r in ex}))[:110]}）")
 
     # ② 反向
-    rev = check_reverse(blocks, lines, by_class)
-    print(f"\n② 反向完整度（★类）：{len(rev)} 个★类")
-    bad_rev = [r for r in rev if r["cov"] < 0.995]
-    for r in rev:
+    rev_rows = check_reverse(blocks, lines, by_class)
+    print(f"\n② 反向完整度（★类）：{len(rev_rows)} 个★类（★ 标在父标题同样计入）")
+    bad_rev = [r for r in rev_rows if r["cov"] < 0.995]
+    for r in rev_rows:
         tag = "OK " if r["cov"] >= 0.995 else "FAIL"
         print(f"   [{tag}] {r['cls']:<34} 有效行={r['real']:<4} 缺失={r['miss']:<4} 覆盖={r['cov']*100:.1f}%")
         for s in r["samples"]:
@@ -440,7 +635,20 @@ def main():
         print(f"   ...另有 {len(bad_den)-25} 个不达标块")
     print(f"   → {'PASS' if not bad_den else 'FAIL'}")
 
-    ok = (lost == 0 and not unattr and not bad_rev and not bad_den)
+    # ④ 行号一致性
+    ln_all = check_lineno(blocks, by_class, rev_index)
+    ln_rows = [r for r in ln_all if r["bad"]]
+    print(f"\n④ 行号一致性（`// :Lnn` ↔ 真实行号）：可判定 {sum(r['checked'] for r in ln_all)} 处"
+          f" → 漂移 {sum(r['bad'] for r in ln_all)} 处")
+    for r in sorted(ln_rows, key=lambda x: -x["bad"])[:15]:
+        print(f"   [FAIL] :{r['start']:<6} 漂移 {r['bad']:>3}/{r['checked']:<3}  {r['sect'][:44]}")
+        for want, real_no, s in r["samples"]:
+            print(f"          标 :L{want} → 实际第 {real_no} 行: {s}")
+    if len(ln_rows) > 15:
+        print(f"   ...另有 {len(ln_rows)-15} 个块存在行号漂移")
+    print(f"   → {'PASS' if not ln_rows else 'FAIL'}")
+
+    ok = (lost == 0 and not unattr and not bad_rev and not bad_den and not ln_rows)
     print("\n④ 残留引用自查（闸门盲区，SKILL §6.4「⑥ 节之外的残留引用检查」必做清单，需人工过）：")
     print("   ②多步示意（是否漏步/顺序反）｜⑦调用链表（方法名·字段名·两跳顺序）｜⑦边界条件表（行为是否与真实分支一致）")
     print("   ⑧穿透卡 L3·L4（异常类型是否与真实 throw/测试断言一致）｜⑩反例的 ✅ 代码（API 是否真实存在）")
@@ -450,7 +658,8 @@ def main():
     print("=" * 96)
 
     if jout:
-        json.dump(dict(fidelity=fid, reverse=rev, density=den, pass_=ok),
+        json.dump(dict(fidelity=fid, reverse=rev_rows, density=den, lineno=ln_rows,
+                       snapshot=sha, pass_=ok),
                   open(jout, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
         print("明细已写:", jout)
     return 0 if ok else 1
