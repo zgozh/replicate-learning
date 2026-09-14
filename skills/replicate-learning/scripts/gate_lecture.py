@@ -824,7 +824,7 @@ def main():
         print(f"          → {'; '.join(reasons)}")
     if len(bad_den) > 25:
         print(f"   ...另有 {len(bad_den)-25} 个不达标块")
-    print(f"   → {'PASS' if not bad_den else 'FAIL'}")
+    print(f"   → {'PASS' if not (bad_den or sig) else 'FAIL'}")
 
     # ④ 行号一致性
     ln_all = check_lineno(blocks, by_class, rev_index)
