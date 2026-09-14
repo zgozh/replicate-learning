@@ -55,10 +55,12 @@ import tarfile
 import subprocess
 import collections
 
-GATE_VERSION = "2.7"     # 2.4：新增 ⑤ 用法与接入（【怎么用】/【上下游】/【怎么接】/⑦.5）+ 用法片段免检边界
+GATE_VERSION = "2.8"     # 2.4：新增 ⑤ 用法与接入（【怎么用】/【上下游】/【怎么接】/⑦.5）+ 用法片段免检边界
                          # 2.5：免检护栏认两种行号格式（`// :Lnn` 与作废的 `// :N`），堵住"标了行号却能免检"的漏洞
                          # 2.6：⓪ 增围栏**配对**体检（原只查奇偶；配对错位会让整段正文被吞进代码块却仍 PASS）
                          # 2.7：⑤ 增**位置**判据（【怎么用】必须在「逐行要点表」之后、件内 `---` 之前，否则读者会把它读成下一节）
+                         # 2.8：新增 ⑥ **散文符号真实性**（正文里的 文件:行 引用 / 件标题声明的 .java / 本仓类.方法；
+                         #      反引号符号走白名单+待确认清单。血证 H16：① 只管代码块，正文提到不存在的东西它一个字都不查）
 
 # ── 归一化 ────────────────────────────────────────────────────────────────
 ANNO = re.compile(r"//\s*:L?(\d+(?:-\d+)?)[ \t]*(.*)$")
@@ -691,6 +693,102 @@ def check_structure(lines, has_blocks):
                 fence_bad=fence_bad, fence_open=fence_open)
 
 
+# ── 检查 ⑥：散文符号真实性（⓪~⑤ 之外最容易漏的一类错误：正文里提到的东西根本不存在） ──
+# 血证 H16：批次1 的 ⑫ 整段描述了从未实现过的类/方法（ListItemBlock / MarkdownVisitor /
+# ParseProfile.of …），六组全绿——因为 ① 只管代码块，正文一个字都不查。
+# 判据取舍依据实测：**只留误报率≈0 的三条**——
+#   R1  `Xxx.java:NN` 引用 → 文件必须存在且行号在范围内        （全库实测 0 处误报）
+#   R4  件标题里声明的 `Xxx.java` 必须存在                     （78 文件 / 185 件标题实测 0 处）
+#   R2''`本仓类.method(` → 方法名必须在本仓任意源码里出现过      （实测 2 处，1 真错 1 同名碰撞）
+# R3（反引号里的 CamelCase 符号是否存在）**实测 371 处里 ~95% 是合法提及**——
+#   第三方库类型（RedisTemplate/AsyncContext/各 *Exception）、教学示例类（Tiny*/Mini*/Immutable*）、
+#   以及"本仓尚未实现"的规划名（MilvusVectorStoreService 等）。因此 **降级为报告清单，不判 FAIL**；
+#   白名单见 spec/散文符号白名单.txt，稳定后再考虑升级。
+PROSE_CALL = re.compile(r"`([A-Z][A-Za-z0-9_]*)\.([a-zA-Z][A-Za-z0-9_]*)\(")
+PROSE_FILE = re.compile(r"`?([A-Za-z0-9_]+\.java)[:：](\d+)(?:-(\d+))?`?")
+PROSE_TITLE = re.compile(r"^#{3,6}\s*6\.\d[\d\.]*\s*.*?`([A-Za-z0-9_]+\.java)`")
+PROSE_CAMEL = re.compile(r"`([A-Z][a-z][A-Za-z0-9_]{1,})`")
+_PROSE = {}
+
+
+def prose_index(root):
+    """惰性构建：文件名→路径 / import 过的外部类型 / 全部源码文本（判"方法名是否出现过"）"""
+    if _PROSE:
+        return _PROSE
+    files, imported, srcs = {}, set(), []
+    for dp, dn, fns in os.walk(root):
+        dn[:] = [d for d in dn if d not in SKIP_DIRS and not d.startswith(".")]
+        for fn in fns:
+            if not fn.endswith(".java"):
+                continue
+            p = os.path.join(dp, fn)
+            files.setdefault(fn, p)
+            t = open(p, encoding="utf-8", errors="replace").read()
+            srcs.append(t)
+            for m in re.finditer(r"^import\s+(?:static\s+)?([\w.]+);", t, re.M):
+                imported.add(m.group(1).split(".")[-1])
+    _PROSE.update(files=files, imported=imported, src="\n".join(srcs))
+    return _PROSE
+
+
+def load_prose_whitelist():
+    """spec/散文符号白名单.txt：一行一条；`#` 开头为注释；支持 `前缀*` 通配"""
+    p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "spec", "散文符号白名单.txt")
+    rules, exact = [], set()
+    if os.path.exists(p):
+        for l in open(p, encoding="utf-8"):
+            l = l.strip()
+            if not l or l.startswith("#"):
+                continue
+            if l.endswith("*"):
+                rules.append(l[:-1])
+            else:
+                exact.add(l)
+    return rules, exact
+
+
+def check_prose(lines, by_class, root):
+    """⑥ 散文符号真实性（只扫代码围栏之外的行）"""
+    idx = prose_index(root)
+    wl_prefix, wl_exact = load_prose_whitelist()
+    r1, r2, r4, r3 = [], [], [], []
+    inside = False
+    for i, l in enumerate(lines):
+        if FENCE_LINE.match(l):
+            inside = not inside
+            continue
+        if inside:
+            continue
+        n = i + 1
+        m = PROSE_TITLE.match(l)
+        if m and m.group(1) not in idx["files"]:
+            r4.append((n, "件标题声明的 %s 不存在" % m.group(1)))
+        for mm in PROSE_FILE.finditer(l):
+            f, a, b = mm.group(1), int(mm.group(2)), mm.group(3)
+            if f not in idx["files"]:
+                r1.append((n, "无此文件 %s" % f))
+                continue
+            tot = len(open(idx["files"][f], encoding="utf-8", errors="replace").read().split("\n"))
+            if a > tot or (b and int(b) > tot):
+                r1.append((n, "%s:%s 越界（该文件共 %d 行）" % (f, mm.group(2) + ("-" + b if b else ""), tot)))
+        for mm in PROSE_CALL.finditer(l):
+            cls, meth = mm.group(1), mm.group(2)
+            if cls in by_class and not re.search(r"\b" + meth + r"\b", idx["src"]):
+                if (cls + "." + meth) in wl_exact:
+                    continue
+                r2.append((n, "%s.%s() —— 全仓源码里没有 %s 这个方法" % (cls, meth, meth)))
+        for mm in PROSE_CAMEL.finditer(l):
+            s = mm.group(1)
+            if s in by_class or s in idx["imported"] or s in wl_exact:
+                continue
+            if any(s.startswith(x) for x in wl_prefix):
+                continue
+            if re.search(r"\b" + s + r"\b", idx["src"]):
+                continue
+            r3.append((n, s))
+    return dict(r1=r1, r2=r2, r4=r4, r3=r3)
+
+
 # ── 检查 ⑤：用法与接入（⑥ 每件的调用现场 / 上下游 / 实现注册 + 批级 ⑦.5 扩展路径） ──
 ITEM_RE = re.compile(r"^(#{3,6})\s*(6\.\d[\d\.]*)\s*(.*)$")
 TBL_ANCHOR = re.compile(r"逐行要点表|^\|\s*行\s*\|")   # 2.7：⑤ 的定位锚——「怎么用」必须排在它之后
@@ -927,8 +1025,30 @@ def main():
             print(f"   [FAIL] {why}（:L{u_ext['at']}）")
     print(f"   → {'PASS' if not (bad_use or bad_io or bad_wire or bad_pos or bad_ext) else 'FAIL'}")
 
+    # ⑥ 散文符号真实性（血证 H16：① 只管代码块，正文提到不存在的类/方法它一个字都不查）
+    prose = check_prose(lines, by_class, ROOT)
+    p_bad = prose["r1"] + prose["r4"] + prose["r2"]
+    print(f"\n⑥ 散文符号真实性（正文里的 文件:行 引用 / 件标题声明的文件 / 本仓类.方法）")
+    print(f"   文件:行 引用不成立={len(prose['r1'])} ｜ 件标题文件不存在={len(prose['r4'])}"
+          f" ｜ 本仓类.方法 全仓无此方法={len(prose['r2'])} ｜ 反引号符号待确认={len(prose['r3'])}（不计 FAIL）")
+    for tag, rows in (("文件:行 引用不成立", prose["r1"]), ("件标题声明的文件不存在", prose["r4"]),
+                      ("本仓类.方法 全仓无此方法", prose["r2"])):
+        for n, s in rows[:12]:
+            print(f"   [FAIL] {tag}：:L{n}  {s}")
+        if len(rows) > 12:
+            print(f"          ...另有 {len(rows)-12} 处")
+    if prose["r3"]:
+        seen = []
+        for n, s in prose["r3"]:
+            if s not in seen:
+                seen.append(s)
+        print(f"   （待人工确认 {len(prose['r3'])} 处 / {len(seen)} 种符号；多为第三方库类型、教学示例类"
+              f"（Tiny*/Mini*/Immutable*）与「本仓尚未实现」的规划名——确认后可加进 spec/散文符号白名单.txt）")
+        print(f"    例：{', '.join(seen[:12])}")
+    print(f"   → {'PASS' if not p_bad else 'FAIL'}")
+
     ok = (not s_reasons and lost == 0 and not unattr and not bad_rev and not bad_den and not sig and not ln_rows
-          and not bad_use and not bad_io and not bad_wire and not bad_pos and not bad_ext)
+          and not bad_use and not bad_io and not bad_wire and not bad_pos and not bad_ext and not p_bad)
 
     print("\n⓪~⑤ 之外的残留引用自查（闸门盲区，SKILL §6.4「⑥ 节之外的残留引用检查」必做清单，需人工过）：")
     print("   ②多步示意（是否漏步/顺序反）｜⑦调用链表（方法名·字段名·两跳顺序）｜⑦边界条件表（行为是否与真实分支一致）")

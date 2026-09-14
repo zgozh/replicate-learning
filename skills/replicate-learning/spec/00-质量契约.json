@@ -1,6 +1,6 @@
 {
   "_说明": "质量契约 SSOT（单一真源）。改任何要求/判据，先改这里，再改 SKILL / references 模板 / gate 脚本，最后跑 skill_selfcheck.py 对账。字段：id=条目号；layer=L1 机械门 / L2 内容契约 / L3 教学增益；stmt=判据原文；gate=闸门实现锚点（脚本内可搜到的标识）；doc=必须在 SKILL.md 里能找到的原文锚点；tpl=必须在 references/批次讲解全文模板.md 里能找到的原文锚点；blood=血证编号（见 spec/血证档案.md）。用 JSON 而非 YAML 是为了零依赖解析（selfcheck 直接 json.load）。",
-  "version": "2.7",
+  "version": "2.8",
   "entries": [
     {"id": "S1", "layer": "L1", "stmt": "批次讲解一级节数 = 17（①~⑯ + 索引）", "gate": "sections", "doc": "节数 = **17**", "tpl": "① 在系统全景中的位置", "blood": "H9"},
     {"id": "S2", "layer": "L1", "stmt": "代码围栏数量为偶数（markdown 未闭合即 FAIL）", "gate": "fences", "doc": "围栏**偶数**", "tpl": "```java", "blood": "H8"},
@@ -33,6 +33,8 @@
     {"id": "A5", "layer": "L2", "stmt": "批前必须写两个内部清单（外部调用穿透清单 + 讲解骨架清单，九列）", "gate": "-", "doc": "两个内部清单", "tpl": "批前两个内部清单", "blood": "-"},
     {"id": "A6", "layer": "L2", "stmt": "⑥ 每件五层：问题一句话 / 源码 / 逐行要点表 / 边界与副作用 / 用法与接入", "gate": "check_usage", "doc": "必含**五层结构**", "tpl": "本文件要解决的一个问题", "blood": "H4"},
     {"id": "V1", "layer": "L1", "stmt": "判据变更必须：递增 GATE_VERSION + §6.6 登记 + 回归集判定不变 + 公告与存量工单", "gate": "GATE_VERSION", "doc": "判据版本与变更规程", "tpl": "-", "blood": "H11"},
-    {"id": "V2", "layer": "L1", "stmt": "改技能后的 DoD：skill_selfcheck 全绿 → 回归集判定不变 → 四处副本同步并 commit+push", "gate": "skill_selfcheck", "doc": "skill_selfcheck", "tpl": "-", "blood": "H12"}
+    {"id": "V2", "layer": "L1", "stmt": "改技能后的 DoD：skill_selfcheck 全绿 → 回归集判定不变 → 四处副本同步并 commit+push", "gate": "skill_selfcheck", "doc": "skill_selfcheck", "tpl": "-", "blood": "H12"},
+    {"id": "P1", "layer": "L1", "stmt": "正文（代码围栏之外）里的 `Xxx.java:NN` 引用必须文件存在且行号在范围内；`6.x` 件标题声明的 `Xxx.java` 必须存在；`本仓类.method(` 的方法名必须在本仓源码里出现过", "gate": "check_prose", "doc": "散文符号真实性", "tpl": "散文符号", "blood": "H16"},
+    {"id": "P2", "layer": "L3", "stmt": "正文里反引号包裹的 CamelCase 符号，若既非本仓类、也非源码 import 过的外部类型、也非白名单，则列入**待人工确认清单**（不判 FAIL）；白名单见 spec/散文符号白名单.txt", "gate": "check_prose", "doc": "待人工确认清单", "tpl": "散文符号", "blood": "H16"}
   ]
 }
