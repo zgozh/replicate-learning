@@ -55,8 +55,9 @@ import tarfile
 import subprocess
 import collections
 
-GATE_VERSION = "2.5"     # 2.4：新增 ⑤ 用法与接入（【怎么用】/【上下游】/【怎么接】/⑦.5）+ 用法片段免检边界
+GATE_VERSION = "2.6"     # 2.4：新增 ⑤ 用法与接入（【怎么用】/【上下游】/【怎么接】/⑦.5）+ 用法片段免检边界
                          # 2.5：免检护栏认两种行号格式（`// :Lnn` 与作废的 `// :N`），堵住"标了行号却能免检"的漏洞
+                         # 2.6：⓪ 增围栏**配对**体检（原只查奇偶；配对错位会让整段正文被吞进代码块却仍 PASS）
 
 # ── 归一化 ────────────────────────────────────────────────────────────────
 ANNO = re.compile(r"//\s*:L?(\d+(?:-\d+)?)[ \t]*(.*)$")
@@ -626,11 +627,42 @@ def check_lineno(blocks, by_class, rev):
 
 
 # ── 检查 ⓪：结构（A 组：节数 / 围栏 / 占位残留 / ⑫ 八条·八段·自指·薄条·回链） ──
+FENCE_LINE = re.compile(r"^(\s*)(`{3,})\s*([A-Za-z0-9_+-]*)\s*$")
+
+
+def fence_scan(lines):
+    """围栏**配对**体检（2.6 新增）。口径与 parse_blocks 完全一致：
+    块外任意围栏行都算"开始"（可带语言标签，也可不带）；块内只有**不带语言标签**的围栏行才闭合，
+    带标签的行会被当成正文追加——这正是"前一个块没闭合"的症状。
+    返回 ([问题三元组], 结束时是否仍在块内)。
+    为什么需要它：⓪ 原来只查"围栏数量为偶数"，而**删除一对围栏中的一半、或把闭合栅栏与开始栅栏互换**，
+    数量仍是偶数 → 一整段正文被吞进代码块却照样 PASS（真实事故见血证 H14）。
+    只判 A（块内出现带标签围栏）/ D（结束时未闭合）/ H3（`### ` 级标题落在块内）三类——
+    `## ` 级不判：合法 prompt 模板的正文里会出现 `## 1. xxx`（当前仅 1 个文件 7 处，属正常）。"""
+    inside = False
+    bad = []
+    for i, l in enumerate(lines):
+        m = FENCE_LINE.match(l)
+        if m:
+            if not inside:
+                inside = True
+            else:
+                if m.group(3):
+                    bad.append(("块内又出现带语言标签的围栏（前一个代码块未闭合）", i + 1, l.strip()[:36]))
+                else:
+                    inside = False
+            continue
+        if inside and re.match(r"^### ", l):
+            bad.append(("标题落在代码块内（正文被吞）", i + 1, l.strip()[:36]))
+    return bad, inside
+
+
 def check_structure(lines, has_blocks):
     """has_blocks=True 才判"教材批"的结构（总览/索引/记录类文件跳过）"""
     txt = "\n".join(lines)
     sec = len([l for l in lines if re.match(r"^## ", l)])
     fences = len([l for l in lines if re.match(r"^\s*`{3,}", l)])
+    fence_bad, fence_open = fence_scan(lines)
     # 占位符只在**代码块内**统计（正文里"残留检查：TODO 0"这类描述句不该误报）
     inblock, residual = False, 0
     for l in lines:
@@ -654,7 +686,8 @@ def check_structure(lines, has_blocks):
         selfref = len(re.findall(r"本批|本阶段|教材第|答案卷|阶段[0-9]|批次[0-9]", seg))
         back = len(re.findall(r"^- 「", seg, re.M))
     return dict(sections=sec, fences=fences, residual=residual, eight=eight, prompt=prompt,
-                selfref=selfref, back=back, thin=thin, is_batch=has_blocks)
+                selfref=selfref, back=back, thin=thin, is_batch=has_blocks,
+                fence_bad=fence_bad, fence_open=fence_open)
 
 
 # ── 检查 ⑤：用法与接入（⑥ 每件的调用现场 / 上下游 / 实现注册 + 批级 ⑦.5 扩展路径） ──
@@ -749,8 +782,14 @@ def main():
             s_reasons.append("⑫ 无「提问→引出」回链（§6.4 ⑫ 要求 ≥1，常见 4~6）")
         if st["thin"]:
             s_reasons.append(f"⑫ 八条中 {len(st['thin'])} 条内容过薄（≤2 行 = 一句话带过）：第 {st['thin']} 条")
+        for kind, ln, t in st["fence_bad"][:6]:
+            s_reasons.append(f"围栏配对：{kind}（:L{ln}  {t}）")
+        if len(st["fence_bad"]) > 6:
+            s_reasons.append(f"围栏配对：另有 {len(st['fence_bad']) - 6} 处")
+        if st["fence_open"]:
+            s_reasons.append("围栏未闭合：文件结束时仍处于代码块内（后面的正文全被吞进代码块）")
         if not s_reasons:
-            print(f"   节数={st['sections']} 围栏={st['fences']}(偶) 占位={st['residual']} "
+            print(f"   节数={st['sections']} 围栏={st['fences']}(偶/配对OK) 占位={st['residual']} "
                   f"⑫八条={st['eight']} 八段={st['prompt']} 自指={st['selfref']} 回链={st['back']} "
                   f"薄条={len(st['thin'])}")
     for r in s_reasons:

@@ -1,9 +1,10 @@
 {
   "_说明": "质量契约 SSOT（单一真源）。改任何要求/判据，先改这里，再改 SKILL / references 模板 / gate 脚本，最后跑 skill_selfcheck.py 对账。字段：id=条目号；layer=L1 机械门 / L2 内容契约 / L3 教学增益；stmt=判据原文；gate=闸门实现锚点（脚本内可搜到的标识）；doc=必须在 SKILL.md 里能找到的原文锚点；tpl=必须在 references/批次讲解全文模板.md 里能找到的原文锚点；blood=血证编号（见 spec/血证档案.md）。用 JSON 而非 YAML 是为了零依赖解析（selfcheck 直接 json.load）。",
-  "version": "2.5",
+  "version": "2.6",
   "entries": [
     {"id": "S1", "layer": "L1", "stmt": "批次讲解一级节数 = 17（①~⑯ + 索引）", "gate": "sections", "doc": "节数 = **17**", "tpl": "① 在系统全景中的位置", "blood": "H9"},
     {"id": "S2", "layer": "L1", "stmt": "代码围栏数量为偶数（markdown 未闭合即 FAIL）", "gate": "fences", "doc": "围栏**偶数**", "tpl": "```java", "blood": "H8"},
+    {"id": "S9", "layer": "L1", "stmt": "围栏必须**配对**：块内不得再出现带语言标签的围栏、`### ` 标题不得落在块内、文件结束时不得仍在块内", "gate": "fence_scan", "doc": "围栏**偶数**且**配对**", "tpl": "```java", "blood": "H14"},
     {"id": "S3", "layer": "L1", "stmt": "代码块内占位符残留 = 0", "gate": "residual", "doc": "占位符 = **0**", "tpl": "占位符", "blood": "H8"},
     {"id": "S4", "layer": "L1", "stmt": "⑫ Vibecoding 八条 = 8", "gate": "eight", "doc": "八条=8", "tpl": "Vibecoding 视角", "blood": "H2"},
     {"id": "S5", "layer": "L1", "stmt": "⑫ 第五条的八段提示词标签 = 8", "gate": "prompt", "doc": "八段=8", "tpl": "【任务】", "blood": "H2"},
