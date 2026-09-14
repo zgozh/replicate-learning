@@ -587,6 +587,38 @@ def check_lineno(blocks, by_class, rev):
     return rows
 
 
+# ── 检查 ⓪：结构（A 组：节数 / 围栏 / 占位残留 / ⑫ 八条·八段·自指·薄条·回链） ──
+def check_structure(lines, has_blocks):
+    """has_blocks=True 才判"教材批"的结构（总览/索引/记录类文件跳过）"""
+    txt = "\n".join(lines)
+    sec = len([l for l in lines if re.match(r"^## ", l)])
+    fences = len([l for l in lines if re.match(r"^\s*`{3,}", l)])
+    # 占位符只在**代码块内**统计（正文里"残留检查：TODO 0"这类描述句不该误报）
+    inblock, residual = False, 0
+    for l in lines:
+        if re.match(r"^\s*`{3,}", l):
+            inblock = not inblock
+            continue
+        if inblock and re.search(r"<<<SRC:|CON" + r"T-|TO" + r"DO|FIX" + r"ME", l):
+            residual += 1
+    m = re.search(r"^## ⑫\s", txt, re.M)
+    m2 = re.search(r"^## ⑬\s", txt, re.M)
+    eight = prompt = selfref = back = 0
+    thin = []
+    if m:
+        seg = txt[m.end(): m2.start() if m2 else len(txt)]
+        eight = len(re.findall(r"^#{3,4}\s*\d+[\.、]\s*", seg, re.M))
+        bodies = re.split(r"^#{3,4}\s*\d+[\.、]", seg, flags=re.M)[1:]
+        for i, b in enumerate(bodies):
+            if len([x for x in b.split("\n") if x.strip()]) <= 2:
+                thin.append(i + 1)
+        prompt = len(re.findall(r"^【[^】]+】", seg, re.M))
+        selfref = len(re.findall(r"本批|本阶段|教材第|答案卷|阶段[0-9]|批次[0-9]", seg))
+        back = len(re.findall(r"^- 「", seg, re.M))
+    return dict(sections=sec, fences=fences, residual=residual, eight=eight, prompt=prompt,
+                selfref=selfref, back=back, thin=thin, is_batch=has_blocks)
+
+
 # ── 主流程 ───────────────────────────────────────────────────────────────
 def main():
     global ROOT
@@ -623,6 +655,37 @@ def main():
     else:
         print("源码快照: 未声明（批头应写「源码依据：commit <sha>」）→ 无法区分「源码演进」与「编造」")
     print("=" * 96)
+
+    # ⓪ 结构（A 组）
+    st = check_structure(lines, any(b[1] == "java" and len(b[2]) >= 5 for b in blocks))
+    print("\n⓪ 结构（A 组 · §6.4 三十六节规范 + ⑫ 形态）")
+    s_reasons = []
+    if not st["is_batch"]:
+        print("   （非教材批：无 java 代码块，跳过结构判定）")
+    else:
+        if st["sections"] != 17:
+            s_reasons.append(f"节数 {st['sections']} ≠ 17（①~⑯ + 索引，§6.4 定义）")
+        if st["fences"] % 2:
+            s_reasons.append(f"代码围栏 {st['fences']} 个 = 奇数（markdown 语法：有未闭合的块）")
+        if st["residual"]:
+            s_reasons.append(f"占位符残留 {st['residual']} 处")
+        if st["eight"] != 8:
+            s_reasons.append(f"⑫ 八条 = {st['eight']} ≠ 8（§6.2.1 定义）")
+        if st["prompt"] != 8:
+            s_reasons.append(f"⑫ 八段提示词 = {st['prompt']} ≠ 8（§6.2.1 定义）")
+        if st["selfref"]:
+            s_reasons.append(f"⑫ 教材自指 {st['selfref']} 处（§6.2 写作视角铁律：必须 0）")
+        if st["back"] == 0:
+            s_reasons.append("⑫ 无「提问→引出」回链（§6.4 ⑫ 要求 ≥1，常见 4~6）")
+        if st["thin"]:
+            s_reasons.append(f"⑫ 八条中 {len(st['thin'])} 条内容过薄（≤2 行 = 一句话带过）：第 {st['thin']} 条")
+        if not s_reasons:
+            print(f"   节数={st['sections']} 围栏={st['fences']}(偶) 占位={st['residual']} "
+                  f"⑫八条={st['eight']} 八段={st['prompt']} 自指={st['selfref']} 回链={st['back']} "
+                  f"薄条={len(st['thin'])}")
+    for r in s_reasons:
+        print("   [FAIL] " + r)
+    print(f"   → {'PASS' if not s_reasons else 'FAIL'}")
 
     # ① 正向
     fid = check_fidelity(blocks, by_class, rev_index)
@@ -708,7 +771,7 @@ def main():
         print(f"   ...另有 {len(ln_rows)-15} 个块存在行号漂移")
     print(f"   → {'PASS' if not ln_rows else 'FAIL'}")
 
-    ok = (lost == 0 and not unattr and not bad_rev and not bad_den and not sig and not ln_rows)
+    ok = (not s_reasons and lost == 0 and not unattr and not bad_rev and not bad_den and not sig and not ln_rows)
     print("\n④ 残留引用自查（闸门盲区，SKILL §6.4「⑥ 节之外的残留引用检查」必做清单，需人工过）：")
     print("   ②多步示意（是否漏步/顺序反）｜⑦调用链表（方法名·字段名·两跳顺序）｜⑦边界条件表（行为是否与真实分支一致）")
     print("   ⑧穿透卡 L3·L4（异常类型是否与真实 throw/测试断言一致）｜⑩反例的 ✅ 代码（API 是否真实存在）")
