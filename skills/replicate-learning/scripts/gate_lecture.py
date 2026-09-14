@@ -8,7 +8,7 @@ gate_lecture.py —— 批次讲解「内容真实性 + 注释密度 + 行号一
         [--snapshot <commit>]   # 不传则自动读批头「源码依据：commit <sha>」
         [--json out.json] [--verbose]
 
-四项检查（任一不过 = 退出码 1）：
+五项检查（任一不过 = 退出码 1）：
   ① 正向保真度：讲解里每个 java 代码块（凭类名归属源文件）的每一行代码，
       必须能在「当前源码树」或「本批声明的源码快照」里逐字找到。
       - 只在当前树命中 → 正常；
@@ -22,9 +22,20 @@ gate_lecture.py —— 批次讲解「内容真实性 + 注释密度 + 行号一
       —— 抓"只贴 `// :Lnn` 裸行号、没有一句讲解"。
   ④ 行号一致性（2026-09-15 新增）：`// :Lnn` 标了行号、且该行内容能在源文件里**唯一定位**时，
       nn 必须就是那一行。指错行号 = FAIL（比少注释更误导初学者）。
+  ⑤ 用法与接入（2026-09-16 新增）：讲清"这份代码怎么被用、怎么被接上"，抓
+      "每行都讲了、读者仍不知道怎么用"（§6.4 ⑥ 第 5 层要求）：
+      (a) 每个 6.x 逐件小节必须有 **【怎么用】**（调用现场：谁在哪个类哪个方法哪一行调它、传什么形态拿回什么）；
+      (b) 每个 6.x 逐件小节必须有 **【上下游】**（上游谁喂数据、下游谁吃产出、失败时两边各看到什么）；
+      (c) 件内代码块出现 `interface` / `abstract class` 的，必须有 **【怎么接】**（实现/继承要覆写什么、
+          最小可编译实现、注册装配路径、扩展步骤、类型陷阱）；
+      (d) 批级必须有 **⑦.5 扩展与接入路径**（含 ≥3 条编号步骤）。
+      标题带【历史版本示例】的小节免检（旧版代码只做快照核验，不要求讲用法）。
 
 免检小节：标题含 手写 / No-Framework / 不用框架 / 等价实现 / 反例 / 对照 的代码块不参与 ①②，
 但会被统计并打印（防止借"反例"之名夹带未核实代码）。
+用法片段：位于 `**【怎么用】/【怎么接】/【扩展步骤】/【上下游】` 标记之下的代码块属**教学合成片段**
+（照抄式调用示例、实现骨架），不参与 ①②③④；**但带 `// :Lnn` 行号标注的块不豁免**——标了行号即
+声明"这是源码原文"，必须逐字核验。
 历史版本块：小节标题含「历史版本 / 历史快照 / 已被阶段」的块，**必须**用快照核验——块内每行都要在
 快照里找到（没声明快照 = 直接 FAIL），这样"标历史版本"就不能当免检后门用。
 """
@@ -148,7 +159,7 @@ def heading_chain(lines, start):
 
 
 def parse_blocks(path):
-    """返回 (全部行, [(起始行号, 语言, 行列表, 所属小节标题, 所属一级节标题, 类名线索, 标题链)])"""
+    """返回 (全部行, [(起始行号, 语言, 行列表, 所属小节标题, 所属一级节标题, 类名线索, 标题链, 用法标记)])"""
     lines = open(path, encoding="utf-8", errors="replace").read().split("\n")
     out, cur, lang, start = [], None, None, 0
     hint, hint_cur = {}, ""
@@ -159,6 +170,16 @@ def parse_blocks(path):
             if ids:
                 hint_cur = " ".join(ids)
         hint[i + 1] = hint_cur
+    # 用法/接入标记：块前最近的 `**【怎么用】**` 之类粗体标记；换标题即清空。
+    # 命中标记的块视为**教学合成片段**（照抄式用法/实现骨架），免 ① 保真核验——
+    # 但带 `// :Lnn` 行号标注的块例外（标了行号即声明"这是源码原文"，必须核验）。
+    mk, mk_cur = {}, ""
+    for i, l in enumerate(lines):
+        if re.match(r"^#{2,5} ", l):
+            mk_cur = ""
+        elif re.match(r"^\*\*(【怎么用】|【怎么接】|【扩展步骤】|【上下游】)", l):
+            mk_cur = l.strip()[:24]
+        mk[i + 1] = mk_cur
     for i, l in enumerate(lines):
         m = re.match(r"^(\s*)(`{3,})\s*([A-Za-z0-9_+-]*)\s*$", l)
         if cur is None:
@@ -169,7 +190,7 @@ def parse_blocks(path):
                 s3 = sect_of(lines, start, (3, 4, 5))
                 s2 = sect_of(lines, start, (2,))
                 out.append((start, lang, cur, s3 if s3 != "?" else s2, s2,
-                            hint.get(start, ""), heading_chain(lines, start)))
+                            hint.get(start, ""), heading_chain(lines, start), mk.get(start, "")))
                 cur = None
             else:
                 cur.append(l)
@@ -333,11 +354,18 @@ def snap_file_lines(rel):
 
 
 # ── 检查 ①：正向保真度 ───────────────────────────────────────────────────
-def is_exempt(sect, h2):
-    """免检判定：小节名或所属一级节名命中免检词，或属于 ⑨ No-Framework 节下的 ### 9.x"""
+L_ANNO = re.compile(r"//\s*:L\d+")
+
+
+def is_exempt(sect, h2, mk="", bl=None):
+    """免检判定：小节名或所属一级节名命中免检词，或属于 ⑨ No-Framework 节下的 ### 9.x，
+    或块位于 `**【怎么用】/【怎么接】/【扩展步骤】/【上下游】` 标记之下（教学合成片段）。
+    例外：命中标记但块内带 `// :Lnn` 行号标注 = 声明自己是源码原文 → 不豁免，照常核验。"""
     if EXEMPT.search(sect or "") or EXEMPT.search(h2 or ""):
         return True
     if re.match(r"^#{3,5}\s*9\.", sect or ""):
+        return True
+    if mk and not any(L_ANNO.search(x) for x in (bl or [])):
         return True
     return False
 
@@ -352,7 +380,7 @@ def is_hist(sect, chain=None):
 
 def check_fidelity(blocks, by_class, rev):
     rows = []
-    for start, lang, bl, sect, h2, hint, chain in blocks:
+    for start, lang, bl, sect, h2, hint, chain, mk in blocks:
         if lang != "java":
             continue
         text = "\n".join(bl)
@@ -374,7 +402,7 @@ def check_fidelity(blocks, by_class, rev):
             snap_lost = [c for c in lost if c not in SNAP_UNION]
         hist = is_hist(sect, chain)
         rows.append(dict(start=start, sect=sect, h2=h2, lang=lang, classes=classes,
-                         n_code=len(code), exempt=is_exempt(sect, h2), hist=hist,
+                         n_code=len(code), exempt=is_exempt(sect, h2, mk, bl), hist=hist,
                          cand=os.path.relpath(cand, ROOT) if cand else None,
                          lost=len(lost) if lost is not None else None,
                          lost_samples=(lost[:4] if lost else []),
@@ -400,11 +428,11 @@ def check_reverse(blocks, lines, by_class):
             n = norm_code(x)
             if n:
                 lect_all.add(n)
-    for start, lang, bl, sect, h2, hint, chain in blocks:
+    for start, lang, bl, sect, h2, hint, chain, mk in blocks:
         if lang != "java" or not block_star(sect, chain):
             continue
-        if is_exempt(sect, h2):
-            continue          # 样例节选 / 手写版等免检块不参与 ★完整性（它们本就不是整文件）
+        if is_exempt(sect, h2, mk, bl):
+            continue          # 样例节选 / 手写版 / 用法片段等免检块不参与 ★完整性（它们本就不是整文件）
         if is_hist(sect, chain):
             continue          # 历史版本块由 ① 按快照核验，不拿当前树做反向覆盖
         classes = find_classes("\n".join(bl))
@@ -454,10 +482,10 @@ def method_names_of(path):
 
 def check_density(blocks, by_class=None, rev=None):
     rows = []
-    for start, lang, bl, sect, h2, hint, chain in blocks:
+    for start, lang, bl, sect, h2, hint, chain, mk in blocks:
         if lang not in CJK_LANGS or len(bl) < 5:
             continue
-        exempt = is_exempt(sect, h2)
+        exempt = is_exempt(sect, h2, mk, bl)
         in_lic, seen_pkg = False, False
         keys = []
         tb = mark_text_block_lines(bl)
@@ -499,8 +527,8 @@ def check_density(blocks, by_class=None, rev=None):
 def star_classes(blocks, by_class):
     """本批的 ★ 类清单（自身或父标题带 ★；类名来自块内声明或标题）"""
     out = []
-    for start, lang, bl, sect, h2, hint, chain in blocks:
-        if lang != "java" or not block_star(sect, chain) or is_exempt(sect, h2):
+    for start, lang, bl, sect, h2, hint, chain, mk in blocks:
+        if lang != "java" or not block_star(sect, chain) or is_exempt(sect, h2, mk, bl):
             continue
         names = find_classes("\n".join(bl))
         if not names:
@@ -517,7 +545,7 @@ def check_sig(blocks, by_class):
     """③c ★类方法签名覆盖（**按类、跨块**判定）：★类每个方法至少有一条注释落在签名行或相邻行。
     注意是"整类"口径——★类允许拆成多个职责段块，只要全篇合起来每个方法都被讲到即可。"""
     covered = []          # [(norm_line, 下一行是否带中文注释)]
-    for start, lang, bl, sect, h2, hint, chain in blocks:
+    for start, lang, bl, sect, h2, hint, chain, mk in blocks:
         if lang != "java":
             continue
         for j, ln in enumerate(bl):
@@ -541,8 +569,8 @@ def check_lineno(blocks, by_class, rev):
     """`// :Lnn` 的行号是否指向该行内容真正所在的行。
     只在"该行内容能在源文件里唯一定位"时才判定（折行/压缩行、重复行、公共符号行跳过）。"""
     rows = []
-    for start, lang, bl, sect, h2, hint, chain in blocks:
-        if lang != "java" or is_exempt(sect, h2):
+    for start, lang, bl, sect, h2, hint, chain, mk in blocks:
+        if lang != "java" or is_exempt(sect, h2, mk, bl):
             continue
         classes = SPLIT_DECL.findall("\n".join(bl))
         if not classes:
@@ -617,6 +645,38 @@ def check_structure(lines, has_blocks):
         back = len(re.findall(r"^- 「", seg, re.M))
     return dict(sections=sec, fences=fences, residual=residual, eight=eight, prompt=prompt,
                 selfref=selfref, back=back, thin=thin, is_batch=has_blocks)
+
+
+# ── 检查 ⑤：用法与接入（⑥ 每件的调用现场 / 上下游 / 实现注册 + 批级 ⑦.5 扩展路径） ──
+ITEM_RE = re.compile(r"^(#{3,6})\s*(6\.\d[\d\.]*)\s*(.*)$")
+USE_MARKS = ("【怎么用】", "【调用现场】")
+WIRE_MARKS = ("【怎么接】", "【实现与注册】")
+IO_MARKS = ("【上下游】", "【上下游契约】")
+IFACE_RE = re.compile(r"^\s*(?:public\s+|abstract\s+|sealed\s+|static\s+)*(?:interface|abstract\s+class)\s+\w+")
+EXT_HEAD_RE = re.compile(r"^#{3,6}\s*(?:⑦\.5|.*(?:扩展与接入|接入与扩展|扩展路径))")
+
+
+def check_usage(lines):
+    """⑤ 用法与接入：切出每个 6.x 件，检查【怎么用】/【上下游】/（抽象件）【怎么接】与批级扩展小节。"""
+    idx = [i for i, l in enumerate(lines) if ITEM_RE.match(l)]
+    items = []
+    for k, i in enumerate(idx):
+        end = idx[k + 1] if k + 1 < len(idx) else len(lines)
+        m = ITEM_RE.match(lines[i])
+        body = "\n".join(lines[i:end])
+        items.append(dict(
+            no=m.group(2), title=m.group(3).strip()[:52], at=i + 1,
+            hist=bool(re.search(r"历史版本|历史快照|已被阶段", m.group(3))),
+            iface=any(IFACE_RE.match(l) for l in lines[i:end]),
+            use=any(x in body for x in USE_MARKS),
+            wire=any(x in body for x in WIRE_MARKS),
+            io=any(x in body for x in IO_MARKS)))
+    ext = [i for i, l in enumerate(lines) if EXT_HEAD_RE.match(l)]
+    steps = 0
+    if ext:
+        seg = "\n".join(lines[ext[0]: ext[0] + 160])
+        steps = len(re.findall(r"^\s*\d+[\.、)]\s*\S", seg, re.M))
+    return items, dict(at=(ext[0] + 1 if ext else 0), steps=steps)
 
 
 # ── 主流程 ───────────────────────────────────────────────────────────────
@@ -771,8 +831,39 @@ def main():
         print(f"   ...另有 {len(ln_rows)-15} 个块存在行号漂移")
     print(f"   → {'PASS' if not ln_rows else 'FAIL'}")
 
-    ok = (not s_reasons and lost == 0 and not unattr and not bad_rev and not bad_den and not sig and not ln_rows)
-    print("\n④ 残留引用自查（闸门盲区，SKILL §6.4「⑥ 节之外的残留引用检查」必做清单，需人工过）：")
+    # ⑤ 用法与接入
+    u_items, u_ext = check_usage(lines)
+    u_live = [r for r in u_items if not r["hist"]]
+    bad_use = [r for r in u_live if not r["use"]]
+    bad_io = [r for r in u_live if not r["io"]]
+    iface = [r for r in u_live if r["iface"]]
+    bad_wire = [r for r in iface if not r["wire"]]
+    bad_ext = (not u_ext["at"]) or u_ext["steps"] < 3
+    print(f"\n⑤ 用法与接入（⑥ 每件：调用现场 + 上下游；抽象件：实现与注册；批级 ⑦.5 扩展路径）")
+    if not st["is_batch"]:
+        print("   （非教材批：跳过用法与接入判定）")
+        bad_use = bad_io = bad_wire = []
+        bad_ext = False
+    else:
+        print(f"   逐件={len(u_live)}（另历史版本小节 {len(u_items)-len(u_live)} 个免检）"
+              f" 【怎么用】={len(u_live)-len(bad_use)}/{len(u_live)}"
+              f" 【上下游】={len(u_live)-len(bad_io)}/{len(u_live)}"
+              f" 抽象件={len(iface)} 【怎么接】={len(iface)-len(bad_wire)}/{len(iface)}"
+              f" ⑦.5扩展小节={'有' if u_ext['at'] else '无'}(步骤{u_ext['steps']})")
+        for tag, rows in (("缺【怎么用】", bad_use), ("缺【上下游】", bad_io), ("缺【怎么接】", bad_wire)):
+            for r in rows[:12]:
+                print(f"   [FAIL] {tag}：{r['no']} {r['title']}  （:L{r['at']}）")
+            if len(rows) > 12:
+                print(f"          ...另有 {len(rows)-12} 个")
+        if bad_ext:
+            why = "缺 ⑦.5 扩展与接入路径小节" if not u_ext["at"] else f"⑦.5 只有 {u_ext['steps']} 条编号步骤（<3）"
+            print(f"   [FAIL] {why}（:L{u_ext['at']}）")
+    print(f"   → {'PASS' if not (bad_use or bad_io or bad_wire or bad_ext) else 'FAIL'}")
+
+    ok = (not s_reasons and lost == 0 and not unattr and not bad_rev and not bad_den and not sig and not ln_rows
+          and not bad_use and not bad_io and not bad_wire and not bad_ext)
+
+    print("\n⓪~⑤ 之外的残留引用自查（闸门盲区，SKILL §6.4「⑥ 节之外的残留引用检查」必做清单，需人工过）：")
     print("   ②多步示意（是否漏步/顺序反）｜⑦调用链表（方法名·字段名·两跳顺序）｜⑦边界条件表（行为是否与真实分支一致）")
     print("   ⑧穿透卡 L3·L4（异常类型是否与真实 throw/测试断言一致）｜⑩反例的 ✅ 代码（API 是否真实存在）")
     print("   ⑪测试表（方法名·构造实参·assertThrows 异常类 —— 逐条打开真实测试文件核对）｜⑯自检表（是否复述旧结论）")
@@ -782,6 +873,7 @@ def main():
 
     if jout:
         json.dump(dict(fidelity=fid, reverse=rev_rows, density=den, lineno=ln_rows,
+                       usage=dict(items=u_items, ext=u_ext),
                        snapshot=sha, pass_=ok),
                   open(jout, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
         print("明细已写:", jout)
