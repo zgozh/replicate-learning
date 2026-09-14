@@ -1,6 +1,6 @@
 {
   "_说明": "质量契约 SSOT（单一真源）。改任何要求/判据，先改这里，再改 SKILL / references 模板 / gate 脚本，最后跑 skill_selfcheck.py 对账。字段：id=条目号；layer=L1 机械门 / L2 内容契约 / L3 教学增益；stmt=判据原文；gate=闸门实现锚点（脚本内可搜到的标识）；doc=必须在 SKILL.md 里能找到的原文锚点；tpl=必须在 references/批次讲解全文模板.md 里能找到的原文锚点；blood=血证编号（见 spec/血证档案.md）。用 JSON 而非 YAML 是为了零依赖解析（selfcheck 直接 json.load）。",
-  "version": "2.4",
+  "version": "2.5",
   "entries": [
     {"id": "S1", "layer": "L1", "stmt": "批次讲解一级节数 = 17（①~⑯ + 索引）", "gate": "sections", "doc": "节数 = **17**", "tpl": "① 在系统全景中的位置", "blood": "H9"},
     {"id": "S2", "layer": "L1", "stmt": "代码围栏数量为偶数（markdown 未闭合即 FAIL）", "gate": "fences", "doc": "围栏**偶数**", "tpl": "```java", "blood": "H8"},
@@ -17,7 +17,8 @@
     {"id": "U2", "layer": "L2", "stmt": "⑥ 每件必须写【上下游】（上游谁喂、下游谁吃、失败时两边各看到什么）", "gate": "IO_MARKS", "doc": "**【上下游】**", "tpl": "**【上下游】**", "blood": "H4"},
     {"id": "U3", "layer": "L2", "stmt": "件内含 interface/abstract class 的必须写【怎么接】（覆写什么/最小实现/注册路径/扩展步骤/类型陷阱）", "gate": "WIRE_MARKS", "doc": "**【怎么接】**", "tpl": "**【怎么接】**", "blood": "H4"},
     {"id": "U4", "layer": "L2", "stmt": "批级必须有 ⑦.5 扩展与接入路径（插入点表 + ≥3 条编号步骤）", "gate": "EXT_HEAD_RE", "doc": "⑦.5", "tpl": "⑦.5", "blood": "H4"},
-    {"id": "U5", "layer": "L2", "stmt": "用法/接入片段属教学合成片段，免 ①②③④；但带 `// :Lnn` 行号标注的不豁免", "gate": "is_exempt", "doc": "带 `// :Lnn` 行号标注的不豁免", "tpl": "不要给它们标 `// :Lnn`", "blood": "H4"},
+    {"id": "U5", "layer": "L2", "stmt": "用法/接入片段属教学合成片段，免 ①②③④；但标了行号的不豁免", "gate": "is_exempt", "doc": "带行号标注的不豁免", "tpl": "不要给它们标行号", "blood": "H4"},
+    {"id": "U6", "layer": "L1", "stmt": "免检护栏对两种行号格式一视同仁：`// :Lnn`（现行）与 `// :N`（已作废但存量 36 文件 / 7315 处在用）都算「声明自己是源码原文」，都不豁免", "gate": "L_ANNO", "doc": "旧格式 `// :N` 不豁免", "tpl": "旧格式 `// :N` 同样不豁免", "blood": "H13"},
     {"id": "R1", "layer": "L1", "stmt": "★ 类源文件有效行覆盖 ≥99.5%（★ 在自身或父标题均计入；拆多块按全批并集算）", "gate": "check_reverse", "doc": "≥99.5%", "tpl": "★", "blood": "H5"},
     {"id": "D1", "layer": "L1", "stmt": "关键行连续 ≥8 行无中文注释 = 密度不足", "gate": "check_density", "doc": "连续 ≥8 行", "tpl": "逐行", "blood": "H2"},
     {"id": "D2", "layer": "L1", "stmt": "教学注释条数 ≥ 关键行数 ÷ 12", "gate": "need", "doc": "关键行÷12", "tpl": "逐行要点表", "blood": "H2"},
