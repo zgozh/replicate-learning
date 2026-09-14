@@ -437,7 +437,22 @@ def check_reverse(blocks, lines, by_class):
 
 
 # ── 检查 ③：注释密度 ─────────────────────────────────────────────────────
-def check_density(blocks):
+SIG = re.compile(r"^\s*(?:(?:public|protected|private|static|final|synchronized|abstract|default|native)\s+)+"
+                 r"[\w<>\[\],\.\?]+\s+(\w+)\s*\([^;]*\)\s*(?:throws\s+[\w\s,\.]+)?\{\s*$")
+
+
+def method_names_of(path):
+    """源文件里的方法名（只认"带修饰符 + 返回类型 + 名 + 参数 + {"的行；故意宽松以少误报）"""
+    out = []
+    for l in src_lines(path):
+        c, _ = strip_anno(l)
+        m = SIG.match(c)
+        if m:
+            out.append(m.group(1))
+    return list(dict.fromkeys(out))
+
+
+def check_density(blocks, by_class=None, rev=None):
     rows = []
     for start, lang, bl, sect, h2, hint, chain in blocks:
         if lang not in CJK_LANGS or len(bl) < 5:
@@ -473,10 +488,51 @@ def check_density(blocks):
             runs += 1
         mx = max(mx, cur)
         cmts = sum(1 for _, ok in keys if ok)
-        need = max(5, math.ceil(key_n / 12)) if "★" in sect else math.ceil(key_n / 12)
+        star = block_star(sect, chain)
+        need = max(5, math.ceil(key_n / 12)) if star else math.ceil(key_n / 12)
         rows.append(dict(start=start, sect=sect, exempt=exempt, key_lines=key_n,
                          comments=cmts, max_run=mx, bad_runs=runs,
-                         need=need, star=("★" in sect)))
+                         need=need, star=star))
+    return rows
+
+
+def star_classes(blocks, by_class):
+    """本批的 ★ 类清单（自身或父标题带 ★；类名来自块内声明或标题）"""
+    out = []
+    for start, lang, bl, sect, h2, hint, chain in blocks:
+        if lang != "java" or not block_star(sect, chain) or is_exempt(sect, h2):
+            continue
+        names = find_classes("\n".join(bl))
+        if not names:
+            ids = [w for w in re.findall(r"[A-Z][A-Za-z0-9_]{3,}", sect) if not re.fullmatch(r"L\d+", w)] or \
+                  [w for w in re.findall(r"[A-Z][A-Za-z0-9_]{3,}", hint) if not re.fullmatch(r"L\d+", w)]
+            names = ids
+        for c in names[:1]:
+            if c not in out and by_class.get(c):
+                out.append(c)
+    return out
+
+
+def check_sig(blocks, by_class):
+    """③c ★类方法签名覆盖（**按类、跨块**判定）：★类每个方法至少有一条注释落在签名行或相邻行。
+    注意是"整类"口径——★类允许拆成多个职责段块，只要全篇合起来每个方法都被讲到即可。"""
+    covered = []          # [(norm_line, 下一行是否带中文注释)]
+    for start, lang, bl, sect, h2, hint, chain in blocks:
+        if lang != "java":
+            continue
+        for j, ln in enumerate(bl):
+            covered.append((norm_code(ln), has_cjk_comment(ln),
+                            has_cjk_comment(bl[j + 1]) if j + 1 < len(bl) else False))
+    rows = []
+    for c in star_classes(blocks, by_class):
+        p = by_class[c][0]
+        miss = []
+        for nm in method_names_of(p):
+            hit = any((nm + "(") in n and (ok or nxt) for n, ok, nxt in covered)
+            if not hit:
+                miss.append(nm)
+        if miss:
+            rows.append(dict(cls=c, src=os.path.relpath(p, ROOT), missing=miss))
     return rows
 
 
@@ -616,7 +672,8 @@ def main():
     print(f"   → {'PASS' if not bad_rev else 'FAIL'}")
 
     # ③ 密度
-    den = check_density(blocks)
+    den = check_density(blocks, by_class, rev_index)
+    sig = check_sig(blocks, by_class)
     print(f"\n③ 注释密度（§6.1.1）：{len(den)} 个代码块")
     bad_den = []
     for r in den:
@@ -627,6 +684,9 @@ def main():
             reasons.append(f"注释 {r['comments']} < 需 {r['need']}")
         if reasons and not r["exempt"]:
             bad_den.append((r, reasons))
+    for r in sig:
+        print(f"   [FAIL] ★类方法签名无注释：{r['cls']}（{r['src']}）→ "
+              f"{len(r['missing'])} 个：{', '.join(r['missing'][:8])}")
     for r, reasons in sorted(bad_den, key=lambda x: -x[0]["max_run"])[:25]:
         print(f"   [FAIL] :{r['start']:<6} 关键行={r['key_lines']:<4} 注释={r['comments']:<4} "
               f"最长无注释={r['max_run']:<4} {r['sect'][:44]}")
@@ -648,7 +708,7 @@ def main():
         print(f"   ...另有 {len(ln_rows)-15} 个块存在行号漂移")
     print(f"   → {'PASS' if not ln_rows else 'FAIL'}")
 
-    ok = (lost == 0 and not unattr and not bad_rev and not bad_den and not ln_rows)
+    ok = (lost == 0 and not unattr and not bad_rev and not bad_den and not sig and not ln_rows)
     print("\n④ 残留引用自查（闸门盲区，SKILL §6.4「⑥ 节之外的残留引用检查」必做清单，需人工过）：")
     print("   ②多步示意（是否漏步/顺序反）｜⑦调用链表（方法名·字段名·两跳顺序）｜⑦边界条件表（行为是否与真实分支一致）")
     print("   ⑧穿透卡 L3·L4（异常类型是否与真实 throw/测试断言一致）｜⑩反例的 ✅ 代码（API 是否真实存在）")
