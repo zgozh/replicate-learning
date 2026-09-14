@@ -55,9 +55,10 @@ import tarfile
 import subprocess
 import collections
 
-GATE_VERSION = "2.6"     # 2.4：新增 ⑤ 用法与接入（【怎么用】/【上下游】/【怎么接】/⑦.5）+ 用法片段免检边界
+GATE_VERSION = "2.7"     # 2.4：新增 ⑤ 用法与接入（【怎么用】/【上下游】/【怎么接】/⑦.5）+ 用法片段免检边界
                          # 2.5：免检护栏认两种行号格式（`// :Lnn` 与作废的 `// :N`），堵住"标了行号却能免检"的漏洞
                          # 2.6：⓪ 增围栏**配对**体检（原只查奇偶；配对错位会让整段正文被吞进代码块却仍 PASS）
+                         # 2.7：⑤ 增**位置**判据（【怎么用】必须在「逐行要点表」之后、件内 `---` 之前，否则读者会把它读成下一节）
 
 # ── 归一化 ────────────────────────────────────────────────────────────────
 ANNO = re.compile(r"//\s*:L?(\d+(?:-\d+)?)[ \t]*(.*)$")
@@ -692,6 +693,7 @@ def check_structure(lines, has_blocks):
 
 # ── 检查 ⑤：用法与接入（⑥ 每件的调用现场 / 上下游 / 实现注册 + 批级 ⑦.5 扩展路径） ──
 ITEM_RE = re.compile(r"^(#{3,6})\s*(6\.\d[\d\.]*)\s*(.*)$")
+TBL_ANCHOR = re.compile(r"逐行要点表|^\|\s*行\s*\|")   # 2.7：⑤ 的定位锚——「怎么用」必须排在它之后
 USE_MARKS = ("【怎么用】", "【调用现场】")
 WIRE_MARKS = ("【怎么接】", "【实现与注册】")
 IO_MARKS = ("【上下游】", "【上下游契约】")
@@ -706,14 +708,26 @@ def check_usage(lines):
     for k, i in enumerate(idx):
         end = idx[k + 1] if k + 1 < len(idx) else len(lines)
         m = ITEM_RE.match(lines[i])
-        body = "\n".join(lines[i:end])
+        seg = lines[i:end]
+        body = "\n".join(seg)
+        # 2.7 新增：⑤ 在件内的**位置**（顺序错了，读者会把"怎么用"当成下一节的内容）
+        u = next((j for j, x in enumerate(seg) if any(mk in x for mk in USE_MARKS)), None)
+        pos_bad = []
+        if u is not None:
+            t = next((j for j, x in enumerate(seg) if TBL_ANCHOR.search(x)), None)
+            if t is not None and u < t:
+                pos_bad.append("【怎么用】出现在「逐行要点表」之前（:L%d）" % (i + 1 + u))
+            r = next((j for j, x in enumerate(seg) if x.strip() == "---"), None)
+            if r is not None and u > r:
+                pos_bad.append("件内 `---` 出现在【怎么用】之前（:L%d）" % (i + 1 + r))
         items.append(dict(
             no=m.group(2), title=m.group(3).strip()[:52], at=i + 1,
             hist=bool(re.search(r"历史版本|历史快照|已被阶段", m.group(3))),
-            iface=any(IFACE_RE.match(l) for l in lines[i:end]),
+            iface=any(IFACE_RE.match(l) for l in seg),
             use=any(x in body for x in USE_MARKS),
             wire=any(x in body for x in WIRE_MARKS),
-            io=any(x in body for x in IO_MARKS)))
+            io=any(x in body for x in IO_MARKS),
+            pos_bad=pos_bad))
     ext = [i for i, l in enumerate(lines) if EXT_HEAD_RE.match(l)]
     steps = 0
     if ext:
@@ -887,30 +901,34 @@ def main():
     bad_io = [r for r in u_live if not r["io"]]
     iface = [r for r in u_live if r["iface"]]
     bad_wire = [r for r in iface if not r["wire"]]
+    bad_pos = [r for r in u_live if r["pos_bad"]]
     bad_ext = (not u_ext["at"]) or u_ext["steps"] < 3
     print(f"\n⑤ 用法与接入（⑥ 每件：调用现场 + 上下游；抽象件：实现与注册；批级 ⑦.5 扩展路径）")
     if not st["is_batch"]:
         print("   （非教材批：跳过用法与接入判定）")
-        bad_use = bad_io = bad_wire = []
+        bad_use = bad_io = bad_wire = bad_pos = []
         bad_ext = False
     else:
         print(f"   逐件={len(u_live)}（另历史版本小节 {len(u_items)-len(u_live)} 个免检）"
               f" 【怎么用】={len(u_live)-len(bad_use)}/{len(u_live)}"
               f" 【上下游】={len(u_live)-len(bad_io)}/{len(u_live)}"
               f" 抽象件={len(iface)} 【怎么接】={len(iface)-len(bad_wire)}/{len(iface)}"
+              f" 位置OK={len(u_live)-len(bad_use)-len(bad_pos)}/{len(u_live)-len(bad_use)}"
               f" ⑦.5扩展小节={'有' if u_ext['at'] else '无'}(步骤{u_ext['steps']})")
         for tag, rows in (("缺【怎么用】", bad_use), ("缺【上下游】", bad_io), ("缺【怎么接】", bad_wire)):
             for r in rows[:12]:
                 print(f"   [FAIL] {tag}：{r['no']} {r['title']}  （:L{r['at']}）")
             if len(rows) > 12:
                 print(f"          ...另有 {len(rows)-12} 个")
+        for r in bad_pos[:12]:
+            print(f"   [FAIL] ⑤ 位置：{r['no']} {r['title']} → {'；'.join(r['pos_bad'])}")
         if bad_ext:
             why = "缺 ⑦.5 扩展与接入路径小节" if not u_ext["at"] else f"⑦.5 只有 {u_ext['steps']} 条编号步骤（<3）"
             print(f"   [FAIL] {why}（:L{u_ext['at']}）")
-    print(f"   → {'PASS' if not (bad_use or bad_io or bad_wire or bad_ext) else 'FAIL'}")
+    print(f"   → {'PASS' if not (bad_use or bad_io or bad_wire or bad_pos or bad_ext) else 'FAIL'}")
 
     ok = (not s_reasons and lost == 0 and not unattr and not bad_rev and not bad_den and not sig and not ln_rows
-          and not bad_use and not bad_io and not bad_wire and not bad_ext)
+          and not bad_use and not bad_io and not bad_wire and not bad_pos and not bad_ext)
 
     print("\n⓪~⑤ 之外的残留引用自查（闸门盲区，SKILL §6.4「⑥ 节之外的残留引用检查」必做清单，需人工过）：")
     print("   ②多步示意（是否漏步/顺序反）｜⑦调用链表（方法名·字段名·两跳顺序）｜⑦边界条件表（行为是否与真实分支一致）")
