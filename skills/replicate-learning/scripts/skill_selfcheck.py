@@ -17,6 +17,7 @@ import io
 import os
 import re
 import sys
+import json
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -176,6 +177,57 @@ def check_refs(r):
              + ('；跳过 %d 处宿主项目路径（docs/ NOTES/）' % len(set(skipped)) if skipped else ''))
 
 
+def check_ssot(r):
+    """⑥ SSOT 对账（2026-09-16 B1 新增）：质量契约 ↔ SKILL ↔ 模板 ↔ gate 四处一致。
+    这是"规则零丢失"的机械保障：SSOT 里声明的要求，必须在文档里有正文锚点；
+    文档里的写法，必须在 gate 里有对应实现锚点（或显式标 '-' 表示由人判）。"""
+    p = os.path.join(ROOT, 'spec', '00-质量契约.json')
+    if not os.path.isfile(p):
+        r.fail('缺 spec/00-质量契约.json（SSOT）')
+        return
+    ssot = json.load(io.open(p, encoding='utf-8'))
+    skill = read('SKILL.md') or ''
+    tpl = read('references/批次讲解全文模板.md') or ''
+    gate = read('scripts/gate_lecture.py') or ''
+    # SSOT 声明的层级只能是 L1/L2/L3
+    bad_layer = [e['id'] for e in ssot['entries'] if e.get('layer') not in ('L1', 'L2', 'L3')]
+    if bad_layer:
+        r.fail('SSOT 条目层级非法（只能 L1/L2/L3）：%s' % '、'.join(bad_layer))
+    else:
+        r.ok('SSOT 条目 %d 条，层级齐备（L1 %d / L2 %d / L3 %d）' % (
+            len(ssot['entries']),
+            sum(1 for e in ssot['entries'] if e['layer'] == 'L1'),
+            sum(1 for e in ssot['entries'] if e['layer'] == 'L2'),
+            sum(1 for e in ssot['entries'] if e['layer'] == 'L3')))
+    # 版本必须与 gate 一致
+    gm = re.search(r'^GATE_VERSION\s*=\s*"([^"]+)"', gate, re.M)
+    if gm and gm.group(1) == str(ssot.get('version')):
+        r.ok('SSOT 版本与 gate 一致：%s' % ssot['version'])
+    else:
+        r.fail('SSOT 版本 %s ≠ gate GATE_VERSION %s' % (ssot.get('version'), gm.group(1) if gm else '缺'))
+    miss_doc = [e['id'] for e in ssot['entries']
+                if e.get('doc') and e['doc'] != '-' and e['doc'] not in skill]
+    miss_tpl = [e['id'] for e in ssot['entries']
+                if e.get('tpl') and e['tpl'] != '-' and e['tpl'] not in tpl]
+    miss_gate = [e['id'] for e in ssot['entries']
+                 if e.get('gate') and e['gate'] != '-' and e['gate'] not in gate]
+    for tag, ids, where in (('SKILL.md', miss_doc, '文档锚点'), ('模板', miss_tpl, '模板锚点'),
+                            ('gate', miss_gate, '实现锚点')):
+        if ids:
+            r.fail('SSOT 条目在 %s 中找不到%s：%s（规则丢失或改了措辞没同步）'
+                   % (tag, where, '、'.join(ids)))
+        else:
+            r.ok('SSOT 全部条目的%s都能在 %s 里找到' % (where, tag))
+    # spec/ 下每个文件都要被 SKILL 引用（防止"有文件没人读"）
+    specdir = os.path.join(ROOT, 'spec')
+    orphan = [fn for fn in sorted(os.listdir(specdir))
+              if fn != 'README.md' and ('spec/' + fn) not in skill]
+    if orphan:
+        r.fail('spec/ 下文件未被 SKILL.md 引用（写了也没人读）：%s' % '、'.join(orphan))
+    else:
+        r.ok('spec/ 下文件均被 SKILL.md 的必读清单引用')
+
+
 def main():
     print('=' * 88)
     print('技能文档一致性自检（skill_selfcheck.py）  根目录:', ROOT)
@@ -191,6 +243,8 @@ def main():
     check_deprecated(r)
     print('\n⑤ 交叉引用与文件引用')
     check_refs(r)
+    print('\n⑥ SSOT 对账（spec/00-质量契约.json ↔ SKILL ↔ 模板 ↔ gate）')
+    check_ssot(r)
     print('\n' + '=' * 88)
     print('检查项 %d，失败 %d → %s' % (r.n, r.bad, 'PASS ✅' if r.bad == 0 else 'FAIL ❌'))
     print('=' * 88)
