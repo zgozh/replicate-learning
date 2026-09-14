@@ -36,7 +36,7 @@ DOCTYPE_DECL = re.compile(r"^\s*(?:public|private|protected|static|final|\s)*[A-
 LICENSE_HINT = re.compile(r"(Licensed to the Apache|Apache License|WITHOUT WARRANTIES|limitations under the License)")
 EXEMPT = re.compile(
     r"(手写|No-Framework|不用框架|等价实现|反例|反面对照|对照实现|穿透卡|穿透|示例|演示|伪代码"
-    r"|卡[一二三四五六七八九十0-9]|L0-L4|L1-L4|例 \d|Tiny)", re.I)
+    r"|卡[一二三四五六七八九十0-9]|L0-L4|L1-L4|例 \d|Tiny|样例节选)", re.I)
 CJK_LANGS = {"java", "sql", "yaml", "yml", "xml", "properties", "lua", "st", "json"}
 SKIP_DIRS = {"target", "node_modules", ".git", ".tmp_audit", ".tmp_lecture", ".workbuddy"}
 SPLIT_DECL = re.compile(r"\b(?:class|interface|enum|record)\s+([A-Z][A-Za-z0-9_]*)")
@@ -281,6 +281,8 @@ def check_reverse(blocks, lines, by_class):
     for start, lang, bl, sect, h2, hint in blocks:
         if lang != "java" or "★" not in sect:
             continue
+        if is_exempt(sect, h2):
+            continue          # 样例节选 / 手写版等免检块不参与 ★完整性（它们本就不是整文件）
         classes = find_classes("\n".join(bl))
         if not classes:
             continue
@@ -325,8 +327,12 @@ def check_density(blocks):
             code, _ = strip_anno(ln)
             if code.strip().startswith(("package ", "import ")):
                 seen_pkg = True
-            if not seen_pkg and (LICENSE_HINT.search(code) or code.strip().startswith("/*")):
+            # 许可证头：只有真的出现 license 文本才进入；遇到块注释结束符立即退出
+            # （否则"以 /* 开头的片段块"——比如节选样例——会被整块误判为许可证头而跳过密度检查）
+            if LICENSE_HINT.search(code):
                 in_lic = True
+            if in_lic and "*/" in code:
+                in_lic = False
             if seen_pkg:
                 in_lic = False
             if not is_key_line(ln, in_lic, tb[idx]):
@@ -435,6 +441,10 @@ def main():
     print(f"   → {'PASS' if not bad_den else 'FAIL'}")
 
     ok = (lost == 0 and not unattr and not bad_rev and not bad_den)
+    print("\n④ 残留引用自查（闸门盲区，SKILL §6.4「⑥ 节之外的残留引用检查」必做清单，需人工过）：")
+    print("   ②多步示意（是否漏步/顺序反）｜⑦调用链表（方法名·字段名·两跳顺序）｜⑦边界条件表（行为是否与真实分支一致）")
+    print("   ⑧穿透卡 L3·L4（异常类型是否与真实 throw/测试断言一致）｜⑩反例的 ✅ 代码（API 是否真实存在）")
+    print("   ⑪测试表（方法名·构造实参·assertThrows 异常类 —— 逐条打开真实测试文件核对）｜⑯自检表（是否复述旧结论）")
     print("\n" + "=" * 96)
     print("总判定:", "PASS ✅" if ok else "FAIL ❌（C 组任一不过 = 当场修）")
     print("=" * 96)
