@@ -55,12 +55,14 @@ import tarfile
 import subprocess
 import collections
 
-GATE_VERSION = "2.8"     # 2.4：新增 ⑤ 用法与接入（【怎么用】/【上下游】/【怎么接】/⑦.5）+ 用法片段免检边界
+GATE_VERSION = "2.9"     # 2.4：新增 ⑤ 用法与接入（【怎么用】/【上下游】/【怎么接】/⑦.5）+ 用法片段免检边界
                          # 2.5：免检护栏认两种行号格式（`// :Lnn` 与作废的 `// :N`），堵住"标了行号却能免检"的漏洞
                          # 2.6：⓪ 增围栏**配对**体检（原只查奇偶；配对错位会让整段正文被吞进代码块却仍 PASS）
                          # 2.7：⑤ 增**位置**判据（【怎么用】必须在「逐行要点表」之后、件内 `---` 之前，否则读者会把它读成下一节）
                          # 2.8：新增 ⑥ **散文符号真实性**（正文里的 文件:行 引用 / 件标题声明的 .java / 本仓类.方法；
                          #      反引号符号走白名单+待确认清单。血证 H16：① 只管代码块，正文提到不存在的东西它一个字都不查）
+                         # 2.9：⓪ 的占位判据扩到**含中文的 `__占位__`**（原只认 TODO/FIXME/CONT-/<<<SRC:；
+                         #      血证 H18：填空白骨架能一路全绿——"还没写"与"已写好"在闸门眼里没有区别）
 
 # ── 归一化 ────────────────────────────────────────────────────────────────
 ANNO = re.compile(r"//\s*:L?(\d+(?:-\d+)?)[ \t]*(.*)$")
@@ -78,6 +80,9 @@ CJK_LANGS = {"java", "sql", "yaml", "yml", "xml", "properties", "lua", "st", "js
 SKIP_DIRS = {"target", "node_modules", ".git", ".tmp_audit", ".tmp_lecture", ".workbuddy"}
 SPLIT_DECL = re.compile(r"\b(?:class|interface|enum|record)\s+([A-Z][A-Za-z0-9_]*)")
 SNAP_DECL = re.compile(r"(?:源码依据|源码快照|snapshot)[^\n]{0,40}?([0-9a-f]{7,40})")
+# 2.9 占位符（含中文的 `__xxx__`）：只扫围栏内。**要求占位里含汉字**，这样 Python 的 `__init__`
+# 这类 dunder 与 `__main__` 不会误报（全库实测：78 份讲解 + 2 份样例 = 0 处，只有模板自身命中）
+PLACEHOLDER = re.compile(r"__[^_\n]*[\u4e00-\u9fff][^_\n]*__")
 
 # ── 快照状态（进程级） ────────────────────────────────────────────────────
 SNAPSHOT = None          # commit sha
@@ -667,12 +672,13 @@ def check_structure(lines, has_blocks):
     fences = len([l for l in lines if re.match(r"^\s*`{3,}", l)])
     fence_bad, fence_open = fence_scan(lines)
     # 占位符只在**代码块内**统计（正文里"残留检查：TODO 0"这类描述句不该误报）
+    # 2.9 起也认**含中文的 `__占位__`**（填空白骨架/草稿不得冒充达标批，血证 H18）
     inblock, residual = False, 0
     for l in lines:
         if re.match(r"^\s*`{3,}", l):
             inblock = not inblock
             continue
-        if inblock and re.search(r"<<<SRC:|CON" + r"T-|TO" + r"DO|FIX" + r"ME", l):
+        if inblock and (re.search(r"<<<SRC:|CON" + r"T-|TO" + r"DO|FIX" + r"ME", l) or PLACEHOLDER.search(l)):
             residual += 1
     m = re.search(r"^## ⑫\s", txt, re.M)
     m2 = re.search(r"^## ⑬\s", txt, re.M)

@@ -18,6 +18,9 @@ import os
 import re
 import sys
 import json
+import shutil
+import subprocess
+import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -331,6 +334,78 @@ def check_safe_edit(r):
         r.fail('safe_edit --check 漏报未闭合围栏')
 
 
+def check_new_batch(r):
+    """⑨ 新批次脚手架与模板**同源**（契约 V4）：骨架的节标题必须来自模板，且结构项由构造保证。
+    这既是新工具的验收测试，也是"模板改了脚手架没跟"的报警器（血证 H9 那类"两套节数"的病）。"""
+    sys.path.insert(0, HERE)
+    try:
+        import new_batch as N              # noqa: E402
+    except Exception as e:                 # pragma: no cover
+        r.fail('scripts/new_batch.py 无法导入：%s' % e)
+        return
+    tpl = read('references/批次讲解全文模板.md') or ''
+    tpl_secs = [m.group(1).strip() for m in re.finditer(r'^###\s+(.+)$', tpl, re.M)]
+    try:
+        skel = N.skeleton_lines(notes=[])
+    except SystemExit as e:
+        r.fail('new_batch 生成骨架时中止：%s' % e)
+        return
+    skel_secs = [l[3:].strip() for l in skel if re.match(r'^## ', l)]
+    if skel_secs != tpl_secs:
+        r.fail('骨架节标题与模板不一致：模板 %d 个 / 骨架 %d 个（模板改了，脚手架没跟）'
+               % (len(tpl_secs), len(skel_secs)))
+    else:
+        r.ok('骨架 %d 节与模板 `### ` 节标题逐一同源（①~⑯ + 索引）' % len(skel_secs))
+    text = '\n'.join(skel)
+    m12 = re.search(r'^## ' + CIRCLED[11] + r'\s', text, re.M)
+    m13 = re.search(r'^## ' + CIRCLED[12] + r'\s', text, re.M)
+    seg12 = text[m12.end(): m13.start() if m13 else len(text)]
+    for tag, cond in (('批级 ⑦.5', '#### ⑦.5' in text),
+                      ('⑫ 八条 = 8', len(re.findall(r'^#### \d+\.', seg12, re.M)) == 8),
+                      ('⑫ 八段提示词 = 8', len(re.findall(r'^【[^】]+】', seg12, re.M)) == 8)):
+        (r.ok if cond else r.fail)('骨架 %s' % tag if cond else '骨架缺 %s' % tag)
+
+
+def check_inject_source(r):
+    """⑩ 源码块注入器端到端自测（H17/H18 的主力工具）：在临时目录里造一个迷你仓库 + 讲解 + plan，
+    验证 ① 注入后每行带**真实行号**且逐字来自源文件 ② 源文件不存在时**拒绝写盘**（文件保持原样）。"""
+    tool = os.path.join(HERE, 'inject_source.py')
+    tmp = tempfile.mkdtemp(prefix='inj_selfcheck_')
+    try:
+        pkg = os.path.join(tmp, 'mod', 'src', 'main', 'java', 'demo')
+        os.makedirs(pkg)
+        src_rel = 'mod/src/main/java/demo/Foo.java'
+        io.open(os.path.join(tmp, src_rel), 'w', encoding='utf-8', newline='').write(
+            'package demo;\n\npublic class Foo {\n    public void run() {\n        int a = 1;\n    }\n}\n')
+        lec = os.path.join(tmp, 'batch.md')
+        io.open(lec, 'w', encoding='utf-8', newline='').write(
+            '# 批次\n\n### 6.1 Foo\n\n```java\n占位\n```\n\n尾注\n')
+        plan = os.path.join(tmp, 'plan.json')
+        io.open(plan, 'w', encoding='utf-8').write(json.dumps({
+            "blocks": [{"anchor": "6.1 Foo", "src": src_rel, "start": 3, "end": 5,
+                        "anno": {"4": "唯一入口方法"}}]}))
+        p = subprocess.run([sys.executable, tool, lec, plan, '--src', tmp],
+                           capture_output=True, text=True, encoding='utf-8')
+        text = io.open(lec, encoding='utf-8').read()
+        ok = (p.returncode == 0 and 'public class Foo {  // :L3' in text
+              and '←教材：唯一入口方法' in text and 'public void run()' in text)
+        (r.ok if ok else r.fail)('注入器：逐字取码 + 真实行号 + `←教材：` 注（rc=%s）' % p.returncode
+                                if ok else '注入器端到端失败 rc=%s\n     %s' % (p.returncode, (p.stderr or '')[:300]))
+
+        before = io.open(lec, encoding='utf-8').read()
+        io.open(plan, 'w', encoding='utf-8').write(json.dumps({
+            "blocks": [{"anchor": "6.1 Foo", "src": 'no/such/File.java', "start": 1, "end": 3}]}))
+        p2 = subprocess.run([sys.executable, tool, lec, plan, '--src', tmp],
+                            capture_output=True, text=True, encoding='utf-8')
+        unchanged = io.open(lec, encoding='utf-8').read() == before
+        (r.ok if (p2.returncode != 0 and unchanged) else r.fail)(
+            '注入器：源文件不存在 → 拒绝写盘（rc=%s，文件未被改动=%s）' % (p2.returncode, unchanged)
+            if (p2.returncode != 0 and unchanged) else
+            '注入器护栏失效：rc=%s，文件未被改动=%s' % (p2.returncode, unchanged))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def main():
     print('=' * 88)
     print('技能文档一致性自检（skill_selfcheck.py）  根目录:', ROOT)
@@ -352,6 +427,10 @@ def main():
     check_tools(r)
     print('\n⑧ safe_edit 护栏负向自测（H14）')
     check_safe_edit(r)
+    print('\n⑨ 新批次脚手架与模板同源（V4）')
+    check_new_batch(r)
+    print('\n⑩ 源码块注入器端到端自测（H17 / H18）')
+    check_inject_source(r)
     print('\n' + '=' * 88)
     print('检查项 %d，失败 %d → %s' % (r.n, r.bad, 'PASS ✅' if r.bad == 0 else 'FAIL ❌'))
     print('=' * 88)
