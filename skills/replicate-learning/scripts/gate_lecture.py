@@ -55,7 +55,7 @@ import tarfile
 import subprocess
 import collections
 
-GATE_VERSION = "2.10"    # 2.4：新增 ⑤ 用法与接入（【怎么用】/【上下游】/【怎么接】/⑦.5）+ 用法片段免检边界
+GATE_VERSION = "2.11"    # 2.11：⑫ 内容深度（八类语义/八段/设计要点/审查清单）——⑫ 是唯一跨项目可复用的那一节
                          # 2.5：免检护栏认两种行号格式（`// :Lnn` 与作废的 `// :N`），堵住"标了行号却能免检"的漏洞
                          # 2.6：⓪ 增围栏**配对**体检（原只查奇偶；配对错位会让整段正文被吞进代码块却仍 PASS）
                          # 2.7：⑤ 增**位置**判据（【怎么用】必须在「逐行要点表」之后、件内 `---` 之前，否则读者会把它读成下一节）
@@ -667,6 +667,82 @@ def fence_scan(lines):
     return bad, inside
 
 
+def vib_depth(seg):
+    """⑫ 内容深度（判据 2.11）——**⑫ 是整份教材里唯一能跨项目复用的那一节，也是唯一产生过
+    "内容编造"级血证（H16）的那一节**；而 2.10 之前闸门对它只有"容器检查"（数条数/数标签/数行数），
+    旧八条与现行八条同样全绿（实测：阶段7批次2 旧八条形态一路全绿）。
+
+    本函数把 §6.2.1 的**可判定实质**测出来。分两档（先测误报率再收判据的落地）：
+      FAIL 档（4 项，全库通过率 82%~91%，且都是 §6.2.1 的旧有明文）：
+        A 八个条目标题必须命中 8 类语义（真实需求/现状勘察/方案比较/增量实现/提示词/产出后审查/验证反馈循环/最终沉淀）
+        B 第 5 条必须含完整八段提示词骨架（≥6/8 个标签）
+        C 第 5 条必须讲"设计要点"（为什么这么写）——只给一个提示词不算讲完
+        D 第 6 条必须是 ≥6 项的审查清单
+      报告档（其余维度只统计不判 FAIL，供存量工单与记分卡用）。
+    """
+    heads = list(re.finditer(r"^#{3,4}\s*\d+[\.、]\s*(.+)$", seg, re.M))
+    titles = [h.group(1).strip() for h in heads]
+    bodies = []
+    for i, h in enumerate(heads):
+        end = heads[i + 1].start() if i + 1 < len(heads) else len(seg)
+        bodies.append(seg[h.end():end])
+    hit, cls_of = [], []
+    for t in titles:
+        c = None
+        for name, pat in VIB_CLASSES:
+            if re.search(pat, t):
+                c = name
+                break
+        cls_of.append(c)
+        if c and c not in hit:
+            hit.append(c)
+    by = {}
+    for c, b in zip(cls_of, bodies):
+        if c and c not in by:
+            by[c] = b
+    r2 = by.get("现状勘察", "")
+    r3 = by.get("方案比较", "")
+    r4 = by.get("增量实现", "")
+    r5 = by.get("提示词", "")
+    r6 = by.get("产出后审查", "")
+    r7 = by.get("验证反馈循环", "")
+    r8 = by.get("最终沉淀", "")
+    tables = [m.group(0).strip().count("\n") + 1
+              for m in re.finditer(r"(?:^\|.*\|\s*$\n?)+", seg, re.M)]
+    labels = len(vib_prompt_segments(r5))
+    r6_tbl = [m.group(0).strip().count("\n") + 1
+              for m in re.finditer(r"(?:^\|.*\|\s*$\n?)+", r6, re.M)]
+    # 审查清单可以是表、编号列表、或 `- [ ]` 勾选项——三种都算（实测误报来源：
+    # 早期批次用 `- [ ] …？` 勾选式清单，只数表格会把 9 项清单判成 0 项）
+    r6_list = (len(re.findall(r"^\s*\d+[\.、)]\s", r6, re.M))
+               + len(re.findall(r"^\s*[-*]\s", r6, re.M)))
+    audit_items = max(r6_tbl + [r6_list] or [0])
+    return dict(
+        titles=titles, hit=hit,
+        miss_class=[n for n, _ in VIB_CLASSES if n not in hit],
+        labels=labels,
+        design=bool(re.search(
+            r"设计要点|设计说明|八段结构对照|为什么这么写|为什么这样写|为什么给|"
+            r"为什么第\s*\d|为何这么写", r5)),
+        audit_items=audit_items,
+        # 报告档
+        r2_prompt="```" in r2,
+        r2_items=len(re.findall(r"^\s*\d+[\.、)]\s", r2, re.M)),
+        r2_pitfall=len(re.findall(r"不先看|没先看|不看 |如果不看|翻车|后果是", r2)),
+        r3_table=any(m.group(0).strip().count("\n") + 1 >= 3
+                     for m in re.finditer(r"(?:^\|.*\|\s*$\n?)+", r3, re.M)),
+        r3_reject=bool(re.search(r"为什么不是|不选|落选|否决|不用它|为什么不选", r3)),
+        r4_steps=max([m.group(0).strip().count("\n") + 1
+                      for m in re.finditer(r"(?:^\|.*\|\s*$\n?)+", r4, re.M)] or [0]),
+        r4_bound=bool(re.search(r"不(应)?触碰|不动 |不要动|不改 |禁止改|不引入", r4)),
+        r5_rounds=len(re.findall(r"第\s*\d\s*轮|轮\s*\d|turn\s*\d+", r5, re.I)),
+        r6_method=bool(re.search(r"怎么查|检查方法|如何查|核对|通过判据|验证方法|依据|落点|grep", r6)),
+        r7_rounds=min(len(re.findall(r"现象", r7)), len(re.findall(r"定位|根因", r7)),
+                      len(re.findall(r"教训|沉淀", r7))),
+        r8_rules=len(re.findall(r"^\s*\d+[\.、)]\s", r8, re.M)),
+    )
+
+
 def check_structure(lines, has_blocks):
     """has_blocks=True 才判"教材批"的结构（总览/索引/记录类文件跳过）"""
     txt = "\n".join(lines)
@@ -698,7 +774,8 @@ def check_structure(lines, has_blocks):
         back = len(re.findall(r"^- 「", seg, re.M))
     return dict(sections=sec, fences=fences, residual=residual, eight=eight, prompt=prompt,
                 selfref=selfref, back=back, thin=thin, is_batch=has_blocks,
-                fence_bad=fence_bad, fence_open=fence_open)
+                fence_bad=fence_bad, fence_open=fence_open,
+                vib=vib_depth(seg) if m else None)
 
 
 # ── 检查 ⑥：散文符号真实性（⓪~⑤ 之外最容易漏的一类错误：正文里提到的东西根本不存在） ──
@@ -803,6 +880,46 @@ TBL_ANCHOR = re.compile(r"逐行要点表|^\|\s*行\s*\|")   # 2.7：⑤ 的定�
 USE_MARKS = ("【怎么用】", "【调用现场】")
 WIRE_MARKS = ("【怎么接】", "【实现与注册】")
 IO_MARKS = ("【上下游】", "【上下游契约】")
+
+# ⑫ 的八类语义（判据 2.11 / §6.2.1）+ 八段提示词的八个标签。
+# 只匹配"语义"，不匹配"标题措辞"——同一件事写成"现状勘察"或"代码勘察"都算，
+# 但写成"依赖（上游接口与既有代码）"不算（那是"谁给我什么"，不是"我该先读什么、不读会怎样"）。
+VIB_CLASSES = (
+    ("真实需求", r"真实需求|需求澄清|真实开发任务"),
+    ("现状勘察", r"现状勘察|代码勘察|勘察"),
+    ("方案比较", r"方案比较|选型"),
+    ("增量实现", r"增量实现|拆分"),
+    ("提示词", r"提示词|提示模板"),
+    ("产出后审查", r"审查"),
+    ("验证反馈循环", r"反馈循环|迭代过程|反馈"),
+    ("最终沉淀", r"沉淀|可迁移|教训|踩过的坑"),
+)
+VIB_LABELS = ("【任务】", "【依赖】", "【要新增的类】", "【核心约束】",
+              "【注释要求】", "【验收标准】", "【禁止】", "【输出格式】")
+# 八段的"段名"识别：同一段写成 `【任务】` 或 `任务：` 都算——**只认一种写法就是把"形式"当"实质"**，
+# 会把成型的中式标签提示词（`任务：/背景：/约束：/验收标准：/输出格式：`）误判成"没有骨架"。
+VIB_SEG = (("任务", r"任务|目标"),
+           ("依赖", r"依赖|背景|已有|上游"),
+           ("要新增的类", r"要新增的类|新增类|要新增|文件清单|产出物"),
+           ("核心约束", r"核心约束|约束|红线|必须遵守"),
+           ("注释要求", r"注释要求|注释|代码注释"),
+           ("验收标准", r"验收标准|验收|测试要求|测试约束"),
+           ("禁止", r"禁止|反例|不要"),
+           ("输出格式", r"输出格式|输出|交付格式"))
+
+
+def vib_prompt_segments(r5):
+    """第 5 条里识别出的提示词段名集合（两种写法都认）。"""
+    hits = set()
+    for name, pat in VIB_SEG:
+        if re.search(r"【\s*(?:%s)\s*】" % pat, r5):
+            hits.add(name)
+    for m in re.finditer(r"^\s*([^\n【】:：]{1,12}?)\s*[:：]", r5, re.M):
+        lab = m.group(1)
+        for name, pat in VIB_SEG:
+            if re.fullmatch(pat, lab):
+                hits.add(name)
+    return hits
 IFACE_RE = re.compile(r"^\s*(?:public\s+|abstract\s+|sealed\s+|static\s+)*(?:interface|abstract\s+class)\s+\w+")
 EXT_HEAD_RE = re.compile(r"^#{3,6}\s*(?:⑦\.5|.*(?:扩展与接入|接入与扩展|扩展路径))")
 
@@ -910,13 +1027,33 @@ def main():
         if st["eight"] != 8:
             s_reasons.append(f"⑫ 八条 = {st['eight']} ≠ 8（§6.2.1 定义）")
         if st["prompt"] != 8:
-            s_reasons.append(f"⑫ 八段提示词 = {st['prompt']} ≠ 8（§6.2.1 定义）")
+            # 2.11 起不再判 FAIL：这条只数 `^【…】` 行总数，**把形式当实质**——
+            # 实测两类误报：① 合法写两份八段提示词的节（阶段10批次2 = 16）被误杀；
+            # ② 用中式标签（`任务：/约束：/验收标准：`）写成的成型提示词（阶段13批次2 = 0）被误杀。
+            # 改由下面 2.11 的"提示词段"判据（两种写法都认、且只看"有没有骨架"）承担。
+            pass
         if st["selfref"]:
             s_reasons.append(f"⑫ 教材自指 {st['selfref']} 处（§6.2 写作视角铁律：必须 0）")
         if st["back"] == 0:
             s_reasons.append("⑫ 无「提问→引出」回链（§6.4 ⑫ 要求 ≥1，常见 4~6）")
         if st["thin"]:
             s_reasons.append(f"⑫ 八条中 {len(st['thin'])} 条内容过薄（≤2 行 = 一句话带过）：第 {st['thin']} 条")
+        v = st.get("vib")
+        if v:
+            if v["miss_class"]:
+                s_reasons.append("⑫ 条目未覆盖这些语义类：%s（§6.2.1 八条：%s）"
+                                 % ("、".join(v["miss_class"]),
+                                    "、".join(n for n, _ in VIB_CLASSES)))
+            if v["labels"] == 0:
+                s_reasons.append("⑫ 第 5 条找不到任何提示词段（任务/依赖/约束/验收标准/禁止/输出格式…）"
+                                 "——§6.2.1：第 5 条必须给出**可直接使用的完整提示词骨架**，"
+                                 "不能只描述『要做什么』")
+            if not v["design"]:
+                s_reasons.append("⑫ 第 5 条缺「设计要点」（只给一个提示词不算讲完——"
+                                 "必须解释这份提示词为什么这么写，读者才学得会而不是只会抄）")
+            if v["audit_items"] < 6:
+                s_reasons.append("⑫ 第 6 条审查清单只有 %d 项（§6.2.1：≥6 项，"
+                                 "且每项要有『怎么查』）" % v["audit_items"])
         for kind, ln, t in st["fence_bad"][:6]:
             s_reasons.append(f"围栏配对：{kind}（:L{ln}  {t}）")
         if len(st["fence_bad"]) > 6:
@@ -927,6 +1064,38 @@ def main():
             print(f"   节数={st['sections']} 围栏={st['fences']}(偶/配对OK) 占位={st['residual']} "
                   f"⑫八条={st['eight']} 八段={st['prompt']} 自指={st['selfref']} 回链={st['back']} "
                   f"薄条={len(st['thin'])}")
+    v = st.get("vib")
+    if v:
+        print("   ⑫ 深度（2.11 · FAIL 档）：语义类 %d/8 ｜ 提示词段 %d/8 ｜ 设计要点 %s ｜ 审查清单 %d 项"
+              % (len(v["hit"]), v["labels"], "有" if v["design"] else "无", v["audit_items"]))
+        if v["labels"] and v["labels"] < 6:
+            print("        ↳ 提示词段只成型 %d/8（八段齐全仍是 §6.2.1 要求；本项暂列报告档，"
+                  "存量清到 ≤5 份后再升 FAIL）" % v["labels"])
+        miss_rep = []
+        if not v["r2_prompt"] and v["r2_items"] < 5:
+            miss_rep.append("现状勘察既无勘察 prompt 块、编号项也只有 %d<5" % v["r2_items"])
+        if v["r2_pitfall"] < 3:
+            miss_rep.append("『不先看会怎样』翻车场景 %d<3" % v["r2_pitfall"])
+        if not v["r3_table"]:
+            miss_rep.append("方案比较无对比表")
+        if not v["r3_reject"]:
+            miss_rep.append("方案比较无『为什么不是其他方案』")
+        if v["r4_steps"] < 6:
+            miss_rep.append("增量实现步表 %d<6 行" % v["r4_steps"])
+        if not v["r4_bound"]:
+            miss_rep.append("缺『不应触碰的边界』")
+        if v["r5_rounds"] < 3:
+            miss_rep.append("提示词不是多轮序列（轮次标记 %d<3）" % v["r5_rounds"])
+        if not v["r6_method"]:
+            miss_rep.append("审查项缺『怎么查』")
+        if v["r7_rounds"] < 1:
+            miss_rep.append("验证反馈循环无完整四段（现象/定位/修正/教训）")
+        elif v["r7_rounds"] < 3:
+            miss_rep.append("四段迭代只有 %d<3 轮" % v["r7_rounds"])
+        if v["r8_rules"] < 5:
+            miss_rep.append("最终沉淀 %d<5 条" % v["r8_rules"])
+        print("   ⑫ 深度报告档（**不计 FAIL**，供存量工单与记分卡）：%s"
+              % ("；".join(miss_rep) if miss_rep else "全部达标"))
     for r in s_reasons:
         print("   [FAIL] " + r)
     print(f"   → {'PASS' if not s_reasons else 'FAIL'}")

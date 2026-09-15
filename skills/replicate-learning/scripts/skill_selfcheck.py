@@ -360,6 +360,62 @@ def check_safe_edit(r):
         r.ok('safe_edit 整节重写 S3：替换体围栏不闭合 → 拒绝执行')
 
 
+def check_vib_depth(r):
+    """⑪ ⑫ 内容深度判据（S12 / H20）的正向 + 负向自测——**判据本身也要被验证**，否则它只是一句口号。
+    合成用例，不依赖宿主项目；三种形态：旧八条（必须被认出） / 现行八条合格样本（不许误拒） / 空壳（必须拦下）。"""
+    sys.path.insert(0, HERE)
+    import gate_lecture as G          # noqa: E402
+
+    def seg(items, item5="", item6=""):
+        out = ['## ⑫ Vibecoding 视角']
+        for i, t in enumerate(items, 1):
+            out.append('#### %d. %s' % (i, t))
+            body = item5 if i == 5 else (item6 if i == 6 else '')
+            out.append(body or '正文一\n正文二\n正文三')
+        return '\n'.join(out)
+
+    NEW8 = ['真实需求（`开发任务`）', '现状勘察（`AI 协作过程`）', '方案比较（`开发任务`）',
+            '增量实现（`开发任务`）', '可直接使用的提示词（`AI 协作过程`）',
+            'AI 产出后的审查（`AI 协作过程`）', '验证反馈循环（`AI 协作过程`）', '最终沉淀（`开发任务`）']
+    OLD8 = ['真实需求（开发任务）', '依赖（上游接口与既有代码）', '要新增的类（按依赖顺序）',
+            '核心约束（不可动摇的红线）', '给 AI 的提示词模板（八段式）', '迭代过程（三轮修正）',
+            '踩过的坑（四个）', '最终沉淀（开发任务）']
+    PROMPT = ('【任务】做一件事\n【依赖】A / B\n【要新增的类】C\n【核心约束】D\n'
+              '【注释要求】E\n【验收标准】F\n【禁止】G\n【输出格式】H')
+    AUDIT = ('| # | 审查项 | 怎么查 |\n|---|---|---|\n'
+             + '\n'.join('| %d | x | grep 看什么 |' % i for i in range(1, 7)))
+
+    v = G.vib_depth(seg(OLD8, PROMPT, AUDIT))
+    if v['miss_class']:
+        r.ok('⑫ 深度判据：旧八条形态被认出缺 %d 类语义（%s…）'
+             % (len(v['miss_class']), '、'.join(v['miss_class'][:3])))
+    else:
+        r.fail('⑫ 深度判据失效：旧八条（依赖 / 要新增的类 / 迭代过程…）竟被认作覆盖全八类')
+
+    v = G.vib_depth(seg(NEW8, PROMPT + '\n**设计要点**：为什么这么写。', AUDIT))
+    if not v['miss_class'] and v['labels'] == 8 and v['design'] and v['audit_items'] >= 6:
+        r.ok('⑫ 深度判据：现行八条 + 八段 + 设计要点 + 6 项审查 → 四项全过（不误拒合格样本）')
+    else:
+        r.fail('⑫ 深度判据误拒了合格样本：%r' % (
+            {k: v[k] for k in ('miss_class', 'labels', 'design', 'audit_items')},))
+
+    v = G.vib_depth(seg(NEW8))
+    if v['labels'] == 0 and not v['design'] and v['audit_items'] == 0:
+        r.ok('⑫ 深度判据：只有标题、无提示词 / 无设计要点 / 无审查清单 → 三项全红（空壳拦得住）')
+    else:
+        r.fail('⑫ 深度判据漏过空壳 ⑫：labels=%d design=%s audit=%d'
+               % (v['labels'], v['design'], v['audit_items']))
+
+    # 中式标签写法（`任务：`）同样要认——只认 `【任务】` 就是"把形式当实质"（实测误报来源）
+    v = G.vib_depth(seg(NEW8, '任务：做一件事\n依赖：A / B\n要新增的类：C\n核心约束：D\n'
+                                '注释要求：E\n验收标准：F\n禁止：G\n输出格式：H\n设计要点：为什么这么写。', AUDIT))
+    if v['labels'] >= 6 and v['design']:
+        r.ok('⑫ 深度判据：中式标签（`任务：` / `验收标准：`）写法同样被认（%d 段）' % v['labels'])
+    else:
+        r.fail('⑫ 深度判据只认 `【…】` 一种写法：中式标签被误判（labels=%d design=%s）'
+               % (v['labels'], v['design']))
+
+
 def check_new_batch(r):
     """⑨ 新批次脚手架与模板**同源**（契约 V4）：骨架的节标题必须来自模板，且结构项由构造保证。
     这既是新工具的验收测试，也是"模板改了脚手架没跟"的报警器（血证 H9 那类"两套节数"的病）。"""
@@ -457,6 +513,8 @@ def main():
     check_new_batch(r)
     print('\n⑩ 源码块注入器端到端自测（H17 / H18）')
     check_inject_source(r)
+    print('\n⑪ ⑫ 内容深度判据自测（S12 / H20）')
+    check_vib_depth(r)
     print('\n' + '=' * 88)
     print('检查项 %d，失败 %d → %s' % (r.n, r.bad, 'PASS ✅' if r.bad == 0 else 'FAIL ❌'))
     print('=' * 88)
