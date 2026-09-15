@@ -23,6 +23,9 @@ gate_lecture.py —— 批次讲解「内容真实性 + 注释密度 + 行号一
       - 批头未声明快照时，退回"只比当前树"，并在报告里提示"无法区分演进与编造"。
   ② 反向完整度：★类源文件的每一条有效行，必须出现在讲解里（**全批所有块并集**）。门槛 99.5%。
       —— 抓"摘录式贴码 / 整节缺失"。★ 记录在父标题（如 `### 6.5 Xxx★`）同样生效。
+      2.13：★ 块的**类名归属**加了标题链兜底 + 同类去重（血证 H23）——原实现只认"块自身含类声明"，
+      而 ⑥ 要求 ★ 类**按职责段拆讲**（段1/段2…），拆分后没有任何单块含类声明 → 本项静默跳过、
+      打印"0 个★类"并 PASS（**真空通过**）。实测全库 60 份批次里 6 份命中，其中 4 份一个类都没查过。
   ③ 注释密度：按 §6.1.1「关键行」口径算
       (a) 无注释连段 <8 行  (b) 教学注释条数 ≥ 关键行数÷12  (c) ★类每个方法签名行或相邻行有注释
       —— 抓"只贴 `// :Lnn` 裸行号、没有一句讲解"。
@@ -55,7 +58,9 @@ import tarfile
 import subprocess
 import collections
 
-GATE_VERSION = "2.12"    # 2.12：③ 注释密度的 need 加 key_n 上限（原式对"关键行<5 的 ★ 块"不可满足，血证 H22）
+GATE_VERSION = "2.13"    # 2.13：② ★ 类的类名归属加「★ 标题链兜底」+ 同类去重（原实现只认块内类声明，
+                         #       ★ 类按职责段拆讲时 ② 静默跳过 → 真空通过，血证 H23）
+                         # 2.12：③ 注释密度的 need 加 key_n 上限（原式对"关键行<5 的 ★ 块"不可满足，血证 H22）
                          # 2.5：免检护栏认两种行号格式（`// :Lnn` 与作废的 `// :N`），堵住"标了行号却能免检"的漏洞
                          # 2.6：⓪ 增围栏**配对**体检（原只查奇偶；配对错位会让整段正文被吞进代码块却仍 PASS）
                          # 2.7：⑤ 增**位置**判据（【怎么用】必须在「逐行要点表」之后、件内 `---` 之前，否则读者会把它读成下一节）
@@ -440,15 +445,54 @@ def block_star(sect, chain):
 
 
 # ── 检查 ②：反向完整度（★类） ────────────────────────────────────────────
+def star_class_fallback(sect, hint, chain, by_class):
+    """★ 块的类名归属兜底（判据 2.13，血证 H23）：块自身没有类声明时，从 **★ 标题链**里取类名。
+
+    **为什么必须有这条兜底**：⑥ 明确要求 ★ 类**按职责段拆讲**（段 1 / 段 2 …）。拆分之后
+    **没有任何单块含类声明**，而原实现写的是 `if not classes: continue` —— 于是本项静默跳过、
+    打印「0 个★类」并 PASS。**这是一次真空通过，不是核验过**：读者看到 PASS，会以为
+    "★ 类的每一行都被讲解覆盖了"，实际上一行都没查。
+
+    实测（2026-09-16，全库 60 份批次文件）：6 份命中该盲区（阶段9 四批 + 阶段10批次1 +
+    阶段6批次1），其中 4 份属于"有 ★ 块但一个类都没查"。补上兜底后 17/50 份转 FAIL，
+    逐份人工验伪：缺失行**都是真缺口**（`@Slf4j` / 类声明 / 依赖字段 / 私有方法确实没在讲解里出现过），
+    **误报 0** —— 所以这是一次"把真空变成实检"，不是收紧门槛。
+
+    取名优先级：块自身标题 → （倒序）祖先标题链里最近一个带 ★ 的标题 → 最近含类名的标题。
+    只接受 `by_class` 里真实存在的类（避免把 `Comparator` 这类 JDK 类型当成本仓类）。
+    **类名长度 ≥3 即可**（`[A-Z][A-Za-z0-9_]{2,}`）：别处 `_ids` 用的是 `{3,}`（≥4 字符），
+    照抄会让 `Dao` / `Rrf` / `Foo` 这类短名解析不出来 → 又退回真空通过（自检当场抓到）。
+    """
+    ids = [w for w in re.findall(r"[A-Z][A-Za-z0-9_]{2,}", sect or "") if not re.fullmatch(r"L\d+", w)]
+    for h in reversed(chain or []):
+        if "★" in h:
+            ids = [w for w in re.findall(r"[A-Z][A-Za-z0-9_]{2,}", h)
+                   if not re.fullmatch(r"L\d+", w)] + ids
+    if not ids:
+        ids = [w for w in re.findall(r"[A-Z][A-Za-z0-9_]{2,}", hint or "") if not re.fullmatch(r"L\d+", w)]
+    for c in ids:
+        if by_class.get(c):
+            return c
+    return None
+
+
 def check_reverse(blocks, lines, by_class):
-    """★类 = 标题（自身或任一父标题）带 ★ 且能提取到类名的代码块"""
+    """★类 = 标题（自身或任一父标题）带 ★ 的 java 代码块，**按类去重**后逐类算覆盖。
+
+    2.13 两处改动（血证 H23）：
+      ① 类名归属加 `star_class_fallback()` 兜底——★ 类按职责段拆讲时不再静默跳过；
+      ② 同一 ★ 类只出一条记录：覆盖是拿**全批所有块的并集**算的（`lect_all`），
+         段1/段2… 各自算一遍会得到完全相同的数字，重复行只会把"3 个★类"报成"15 个"。
+    """
     rows = []
+    seen_cls = set()
     lect_all = set()
     for blk in blocks:
         for x in blk[2]:
             n = norm_code(x)
             if n:
                 lect_all.add(n)
+    lect_ns = [re.sub(r"\s+", "", v) for v in lect_all]
     for start, lang, bl, sect, h2, hint, chain, mk in blocks:
         if lang != "java" or not block_star(sect, chain):
             continue
@@ -458,14 +502,20 @@ def check_reverse(blocks, lines, by_class):
             continue          # 历史版本块由 ① 按快照核验，不拿当前树做反向覆盖
         classes = find_classes("\n".join(bl))
         if not classes:
+            # 2.13 兜底：段拆块不含类声明时，从 ★ 标题链取类名（否则本项真空通过）
+            c = star_class_fallback(sect, hint, chain, by_class)
+            classes = [c] if c else []
+        if not classes:
             continue
         for c in classes[:1]:
+            if c in seen_cls:
+                continue
             cands = by_class.get(c)
             if not cands:
                 continue
+            seen_cls.add(c)
             p = cands[0]
             real, miss = 0, []
-            lect_ns = [re.sub(r"\s+", "", v) for v in lect_all]
             for sl in src_lines(p):
                 t = norm_code(sl)
                 if not t or CMT_LINE.match(t) or t.startswith(("import ", "package ")) or PUNCT_ONLY.match(t):

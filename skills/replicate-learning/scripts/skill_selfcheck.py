@@ -513,6 +513,78 @@ def check_inject_source(r):
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def check_reverse_fallback(r):
+    """⑫ ② 反向完整度的「★ 标题链兜底」自测（判据 2.13 / 血证 H23）。
+
+    **为什么这条必须有**：② 原实现只认「块自身含类声明」，而 ⑥ 要求 ★ 类**按职责段拆讲**——
+    拆分后没有任何单块含类声明 → ② 静默跳过、打印「0 个★类」并 PASS。**真空通过**最难被发现，
+    因为它长得跟真通过一模一样。所以这里用合成用例把它钉死：
+      正例 = 段拆块（无类声明）必须被算出覆盖率、且缺行必须被报出；
+      反例 = 若哪天有人把兜底删掉（rows 变空），本自检必须 FAIL 而不是继续绿。
+    另外钉一条"不许误拒"：整类逐字贴全时覆盖率必须是 100%。
+    """
+    sys.path.insert(0, HERE)
+    import gate_lecture as G          # noqa: E402
+    import tempfile
+    import os as _os
+
+    SRC = ('package demo;\n'
+           'public class Foo {\n'
+           '    private int a;\n'
+           '    private int b;\n'
+           '    public int sum() {\n'
+           '        return a + b;\n'
+           '    }\n'
+           '    public int diff() {\n'
+           '        return a - b;\n'
+           '    }\n'
+           '}\n')
+    tmp = tempfile.mkdtemp(prefix="gate_rev_")
+    p = _os.path.join(tmp, "Foo.java")
+    open(p, "w", encoding="utf-8").write(SRC)
+    by_class = {"Foo": [p]}
+    saved = (getattr(G, "ROOT", None), G.SNAPSHOT, G.SNAP_TAR, G.SNAP_UNION)
+    G.ROOT, G.SNAPSHOT, G.SNAP_TAR, G.SNAP_UNION = tmp, None, None, None
+    try:
+        # —— 正例：段拆块（块内没有类声明），★ 只在标题上
+        bl = ['    public int sum() {', '        return a + b;', '    }']
+        blocks = [(10, "java", bl, "### 6.1 Foo★（按职责段拆讲）", "## ⑥ 逐件讲解",
+                   "Foo", ["## ⑥ 逐件讲解"], "")]
+        rows = G.check_reverse(blocks, [], by_class)
+        if len(rows) == 1 and rows[0]["cls"] == "Foo" and rows[0]["cov"] < 0.995 and rows[0]["miss"] > 0:
+            r.ok('② 兜底生效：★ 类按职责段拆讲（块内无类声明）时仍被算出覆盖率 '
+                 '（真实缺 %d 行，cov=%.2f）' % (rows[0]["miss"], rows[0]["cov"]))
+        elif not rows:
+            r.fail('② 又回到「真空通过」：★ 块没有类声明时一个类都没核验（血证 H23 复发）——'
+                   '段拆讲是 ⑥ 要求的写法，这种块必须能归属到 ★ 标题里的类')
+        else:
+            r.fail('② 兜底结果不符预期：%r' % (rows[0],))
+
+        # —— 钉桩反例：整类逐字贴全时，覆盖率必须 100%（兜底不许把"贴全了"判成缺行）
+        bl2 = [l for l in SRC.split("\n") if l.strip()]
+        blocks2 = [(10, "java", bl2, "### 6.1 Foo★（整文件）", "## ⑥ 逐件讲解",
+                    "Foo", ["## ⑥ 逐件讲解"], "")]
+        rows2 = G.check_reverse(blocks2, [], by_class)
+        if len(rows2) == 1 and rows2[0]["miss"] == 0 and rows2[0]["cov"] == 1.0:
+            r.ok('② 不误拒：★ 类整文件逐字贴全 → 覆盖 100%（兜底没把"贴全"判成缺行）')
+        else:
+            r.fail('② 误拒了整文件贴全的 ★ 类：%r' % (rows2[0] if rows2 else None,))
+
+        # —— 同类去重：同一个 ★ 类被拆成多个段块时，只出一条记录（否则"3 个★类"会被报成"15 个"）
+        blocks3 = [(10, "java", bl, "### 6.1 Foo★（段1）", "## ⑥ 逐件讲解", "Foo", ["## ⑥ 逐件讲解"], ""),
+                   (40, "java", ['    public int diff() {', '        return a - b;', '    }'],
+                    "### 6.1 Foo★（段2）", "## ⑥ 逐件讲解", "Foo", ["## ⑥ 逐件讲解"], "")]
+        rows3 = G.check_reverse(blocks3, [], by_class)
+        if len(rows3) == 1:
+            r.ok('② 同类去重：同一 ★ 类的 2 个段块只出 1 条记录（★类数不再被段数放大）')
+        else:
+            r.fail('② 同类没去重：2 个段块出了 %d 条记录（"N 个★类"会被段数放大）' % len(rows3))
+    finally:
+        G.ROOT, G.SNAPSHOT, G.SNAP_TAR, G.SNAP_UNION = saved
+        import shutil
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def main():
     print('=' * 88)
     print('技能文档一致性自检（skill_selfcheck.py）  根目录:', ROOT)
@@ -538,8 +610,10 @@ def main():
     check_new_batch(r)
     print('\n⑩ 源码块注入器端到端自测（H17 / H18）')
     check_inject_source(r)
-    print('\n⑪ ⑫ 内容深度判据自测（S12 / H20）+ 已知盲区钉桩')
+    print('\n⑪  内容深度判据自测（S12 / H20）+ 已知盲区钉桩')
     check_vib_depth(r)
+    print('\n⑫ ② 反向完整度的 ★ 标题链兜底自测（2.13 / H23）+ 真空通过钉桩')
+    check_reverse_fallback(r)
     print('\n' + '=' * 88)
     print('检查项 %d，失败 %d → %s' % (r.n, r.bad, 'PASS ✅' if r.bad == 0 else 'FAIL ❌'))
     print('=' * 88)
