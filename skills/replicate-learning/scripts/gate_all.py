@@ -62,6 +62,8 @@ def fail_lines(r):
 def scan(root, src):
     by_class, rev = G.index_sources(src)
     rows = []
+    global VER_MISS
+    VER_MISS = []
     for dp, _dns, fns in os.walk(root):
         for fn in sorted(fns):
             if not fn.endswith(".md"):
@@ -71,6 +73,8 @@ def scan(root, src):
             lines, blocks = G.parse_blocks(p)
             sha, _how = G.resolve_snapshot(lines)
             reset_snap(sha)
+            if not G.ver_marker(lines)[0]:        # 2.10 报告项：⑯ 从没写明判据版本（不改判定，见下）
+                VER_MISS.append(rel)
             fid = [r for r in G.check_fidelity(blocks, by_class, rev) if not r["exempt"]]
             tot = sum(r["n_code"] for r in fid)
             lost = sum(fail_lines(r) for r in fid)
@@ -170,6 +174,11 @@ def summary(rows):
     print("   逐件小节总数:", sum(r["usage"]["items"] for r in rows), "；已写【怎么用】:",
           sum(r["usage"]["items"] - r["usage"]["use"] for r in rows))
     print("声明了源码快照的文件:", sum(1 for r in rows if r["snap"]))
+    # 2.10 报告项（**不进 rows**：改 rows 会让所有基线文件都"发生变化"，破坏"判据零附带影响"的证伪能力）
+    print("⑯ 判据版本标注（报告项，不计 FAIL）: **从没写过判据版本**的 %d 份 / 共 %d 份"
+          "（另有标了旧版本、建议复核数字的若干）"
+          "　→ 一键补齐：python scripts/sync_gate_result.py <文件> --src <仓库根> --apply"
+          % (len(VER_MISS), len(rows)))
     return bad
 
 

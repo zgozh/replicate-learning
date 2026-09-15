@@ -55,7 +55,7 @@ import tarfile
 import subprocess
 import collections
 
-GATE_VERSION = "2.9"     # 2.4：新增 ⑤ 用法与接入（【怎么用】/【上下游】/【怎么接】/⑦.5）+ 用法片段免检边界
+GATE_VERSION = "2.10"    # 2.4：新增 ⑤ 用法与接入（【怎么用】/【上下游】/【怎么接】/⑦.5）+ 用法片段免检边界
                          # 2.5：免检护栏认两种行号格式（`// :Lnn` 与作废的 `// :N`），堵住"标了行号却能免检"的漏洞
                          # 2.6：⓪ 增围栏**配对**体检（原只查奇偶；配对错位会让整段正文被吞进代码块却仍 PASS）
                          # 2.7：⑤ 增**位置**判据（【怎么用】必须在「逐行要点表」之后、件内 `---` 之前，否则读者会把它读成下一节）
@@ -63,6 +63,8 @@ GATE_VERSION = "2.9"     # 2.4：新增 ⑤ 用法与接入（【怎么用】/�
                          #      反引号符号走白名单+待确认清单。血证 H16：① 只管代码块，正文提到不存在的东西它一个字都不查）
                          # 2.9：⓪ 的占位判据扩到**含中文的 `__占位__`**（原只认 TODO/FIXME/CONT-/<<<SRC:；
                          #      血证 H18：填空白骨架能一路全绿——"还没写"与"已写好"在闸门眼里没有区别）
+                         # 2.10：⑯ 段是否写明当前判据版本 → **报告项**（不计 FAIL）。实测只有 6/78 份写明，
+                         #      直接判 FAIL 会让"绿"清零；先靠 sync_gate_result.py 补存量，再升 FAIL（血证 H15）
 
 # ── 归一化 ────────────────────────────────────────────────────────────────
 ANNO = re.compile(r"//\s*:L?(\d+(?:-\d+)?)[ \t]*(.*)$")
@@ -805,6 +807,21 @@ IFACE_RE = re.compile(r"^\s*(?:public\s+|abstract\s+|sealed\s+|static\s+)*(?:int
 EXT_HEAD_RE = re.compile(r"^#{3,6}\s*(?:⑦\.5|.*(?:扩展与接入|接入与扩展|扩展路径))")
 
 
+def ver_marker(lines):
+    """2.10（**报告项，不计 FAIL**）：⑯ 段有没有写明判据版本 → 返回 (是否标过任何版本, 标的版本, 是否当前版)。
+
+    两问分开的用意：**"从没标过"才是真缺陷**（⑯ 里的数字没人知道按哪版跑的，血证 H15 就是复述旧结论）；
+    "标了但不是当前版"只是**提示复核**——判据每升一版就让所有旧标注变成"不达标"是跑步机，不是质量。
+    实测：78 份里 6 份写过版本；升到 2.10 后那 6 份也变"非当前版"——正说明两问必须分开。"""
+    txt = "\n".join(lines)
+    m = re.search(r"^## ⑯", txt, re.M)
+    if not m:
+        return False, None, False
+    seg = txt[m.start():]
+    vs = re.findall(r"判据\s*v?([\d]+\.[\d]+)", seg) or re.findall(r"\bv([\d]+\.[\d]+)\b", seg)
+    return bool(vs), (vs[-1] if vs else None), GATE_VERSION in seg
+
+
 def check_usage(lines):
     """⑤ 用法与接入：切出每个 6.x 件，检查【怎么用】/【上下游】/（抽象件）【怎么接】与批级扩展小节。"""
     idx = [i for i, l in enumerate(lines) if ITEM_RE.match(l)]
@@ -1060,6 +1077,16 @@ def main():
     print("   ②多步示意（是否漏步/顺序反）｜⑦调用链表（方法名·字段名·两跳顺序）｜⑦边界条件表（行为是否与真实分支一致）")
     print("   ⑧穿透卡 L3·L4（异常类型是否与真实 throw/测试断言一致）｜⑩反例的 ✅ 代码（API 是否真实存在）")
     print("   ⑪测试表（方法名·构造实参·assertThrows 异常类 —— 逐条打开真实测试文件核对）｜⑯自检表（是否复述旧结论）")
+    # 2.10（报告项，不计 FAIL）：⑯ 段有没有写明判据版本 —— 从没标过 = 数字不知道按哪版跑的（血证 H15）
+    has_v, which, is_cur = ver_marker(lines)
+    if not has_v:
+        note = f"**从没写明判据版本**（⑯ 的数字不知道按哪版跑的）"
+    elif not is_cur:
+        note = f"标的是 v{which}（当前 v{GATE_VERSION} → 建议复核一遍数字）"
+    else:
+        note = f"已写明 v{GATE_VERSION} ✅"
+    print(f"   ⑯ 判据版本标注（**报告项，不计 FAIL**）：{note}"
+          f"　→ 一键补齐：`python scripts/sync_gate_result.py <本文件> --src <仓库根> --apply`")
     print("\n" + "=" * 96)
     print("总判定:", "PASS ✅" if ok else "FAIL ❌（C 组任一不过 = 当场修）")
     print("=" * 96)
@@ -1067,7 +1094,7 @@ def main():
     if jout:
         json.dump(dict(fidelity=fid, reverse=rev_rows, density=den, lineno=ln_rows,
                        usage=dict(items=u_items, ext=u_ext),
-                       snapshot=sha, pass_=ok),
+                       snapshot=sha, ver_marked=(ver_marker(lines)[2]), pass_=ok),
                   open(jout, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
         print("明细已写:", jout)
     return 0 if ok else 1

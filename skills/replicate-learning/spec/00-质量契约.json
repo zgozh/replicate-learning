@@ -1,12 +1,13 @@
 {
   "_说明": "质量契约 SSOT（单一真源）。改任何要求/判据，先改这里，再改 SKILL / references 模板 / gate 脚本，最后跑 skill_selfcheck.py 对账。字段：id=条目号；layer=L1 机械门 / L2 内容契约 / L3 教学增益；stmt=判据原文；gate=闸门实现锚点（脚本内可搜到的标识）；doc=必须在 SKILL.md 里能找到的原文锚点；tpl=必须在 references/批次讲解全文模板.md 里能找到的原文锚点；blood=血证编号（见 spec/血证档案.md）。用 JSON 而非 YAML 是为了零依赖解析（selfcheck 直接 json.load）。",
-  "version": "2.9",
+  "version": "2.10",
   "entries": [
     {"id": "S1", "layer": "L1", "stmt": "批次讲解一级节数 = 17（①~⑯ + 索引）", "gate": "sections", "doc": "节数 = **17**", "tpl": "① 在系统全景中的位置", "blood": "H9"},
     {"id": "S2", "layer": "L1", "stmt": "代码围栏数量为偶数（markdown 未闭合即 FAIL）", "gate": "fences", "doc": "围栏**偶数**", "tpl": "```java", "blood": "H8"},
     {"id": "S9", "layer": "L1", "stmt": "围栏必须**配对**：块内不得再出现带语言标签的围栏、`### ` 标题不得落在块内、文件结束时不得仍在块内", "gate": "fence_scan", "doc": "围栏**偶数**且**配对**", "tpl": "```java", "blood": "H14"},
     {"id": "S3", "layer": "L1", "stmt": "代码块内占位符残留 = 0", "gate": "residual", "doc": "占位符 = **0**", "tpl": "占位符", "blood": "H8"},
     {"id": "S10", "layer": "L1", "stmt": "占位符残留 = 0 **且含中文的 `__占位__` 也算残留**（「还没写」与「已写好」必须能被闸门区分；原判据只认 TODO/FIXME/CONT-/<<<SRC:，于是填空白骨架能一路全绿）", "gate": "PLACEHOLDER", "doc": "含中文的 `__占位__`", "tpl": "占位符必须清零", "blood": "H18"},
+    {"id": "S11", "layer": "L2", "stmt": "⑯ 自检段必须写明本批按**哪一版判据**跑的（`判据 vX.Y`）——从没写过的，⑯ 里的数字就不知道是按哪版跑的，正是「复述旧结论」的温床。**当前为报告项（不计 FAIL）**：实测只有 6/78 份写过版本，直接判 FAIL 会让「绿」清零、度量失去指向性；先用 `scripts/sync_gate_result.py` 把存量补齐，再升为 FAIL", "gate": "ver_marker", "doc": "⑯ 判据版本", "tpl": "-", "blood": "H15"},
     {"id": "S4", "layer": "L1", "stmt": "⑫ Vibecoding 八条 = 8", "gate": "eight", "doc": "八条=8", "tpl": "Vibecoding 视角", "blood": "H2"},
     {"id": "S5", "layer": "L1", "stmt": "⑫ 第五条的八段提示词标签 = 8", "gate": "prompt", "doc": "八段=8", "tpl": "【任务】", "blood": "H2"},
     {"id": "S6", "layer": "L1", "stmt": "⑫ 教材自指话语 = 0（本批/本阶段/教材第/答案卷/阶段N/批次N）", "gate": "selfref", "doc": "自指=0", "tpl": "工程坐标", "blood": "H2"},
