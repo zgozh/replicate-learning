@@ -38,6 +38,8 @@ gate_lecture.py —— 批次讲解「内容真实性 + 注释密度 + 行号一
       (c) 件内代码块出现 `interface` / `abstract class` 的，必须有 **【怎么接】**（实现/继承要覆写什么、
           最小可编译实现、注册装配路径、扩展步骤、类型陷阱）；
       (d) 批级必须有 **⑦.5 扩展与接入路径**（含 ≥3 条编号步骤）。
+      2.14：**件段不得越过一级节标题**——⑥ 之后的小节（⑧ 穿透卡 / ⑨ No-Framework / ⑩ 反例）
+      里的手写 `interface` 骨架与【怎么接】标记不再被算进"最后一个 6.x 件"（血证 H24）。
       标题带【历史版本示例】的小节免检（旧版代码只做快照核验，不要求讲用法）。
 
 免检小节：标题含 手写 / No-Framework / 不用框架 / 等价实现 / 反例 / 对照 的代码块不参与 ①②，
@@ -58,7 +60,9 @@ import tarfile
 import subprocess
 import collections
 
-GATE_VERSION = "2.13"    # 2.13：② ★ 类的类名归属加「★ 标题链兜底」+ 同类去重（原实现只认块内类声明，
+GATE_VERSION = "2.14"    # 2.14：⑤ 的**件段不得越过一级节标题**（原实现让最后一个 6.x 件的段延伸到 EOF，
+                         #       把 ⑧//⑩ 里的手写 interface 与【怎么接】算到它头上：10 件 iface 误判 / 6 件 wire 误判，血证 H24）
+                         # 2.13：② ★ 类的类名归属加「★ 标题链兜底」+ 同类去重（原实现只认块内类声明，
                          #       ★ 类按职责段拆讲时 ② 静默跳过 → 真空通过，血证 H23）
                          # 2.12：③ 注释密度的 need 加 key_n 上限（原式对"关键行<5 的 ★ 块"不可满足，血证 H22）
                          # 2.5：免检护栏认两种行号格式（`// :Lnn` 与作废的 `// :N`），堵住"标了行号却能免检"的漏洞
@@ -998,6 +1002,14 @@ def check_usage(lines):
     items = []
     for k, i in enumerate(idx):
         end = idx[k + 1] if k + 1 < len(idx) else len(lines)
+        # 2.14（血证 H24）：件段**不得越过一级节标题**。原实现里"最后一个 6.x 件"的段一直延伸到
+        # 文件末尾——于是 ⑧ 穿透卡 / ⑨ No-Framework / ⑩ 反例里的手写 `interface Xxx {` 骨架与
+        # 【怎么接】标记都被算到那个件头上。实测全库：**10 件 iface 误判为真**（该件凭空要多写
+        # 【怎么接】）、**6 件 wire 误判为真**（后文有【怎么接】就算它写了）。件段到自己所属一级节
+        # 结束为止，这才是"件内"的字面意思。
+        stops = [j for j in range(i + 1, end) if lines[j].startswith("## ")]
+        if stops:
+            end = stops[0]
         m = ITEM_RE.match(lines[i])
         seg = lines[i:end]
         body = "\n".join(seg)

@@ -585,6 +585,41 @@ def check_reverse_fallback(r):
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def check_usage_boundary(r):
+    """⑬ ⑤ 的「件段不得越过一级节标题」自测（判据 2.14 / 血证 H24）。
+
+    **为什么钉它**：原实现里"最后一个 6.x 件"的段一直延伸到文件末尾，于是  No-Framework 里那段
+    手写的 `interface Scorer { … }` 骨架被算进那个件 → 它凭空多出"抽象件"身份、被要求写【怎么接】。
+    这种误判**看不出来**：人只会觉得"这个件确实有接口啊"，然后去补一个语义上不该有的小节。
+    """
+    sys.path.insert(0, HERE)
+    import gate_lecture as G          # noqa: E402
+
+    head = ["## ⑥ 逐件讲解", "### 6.1 Foo —— 唯一的件（10 行）", "正文一", "正文二",
+            "**【怎么用】调用现场**", "正文三", "**【上下游】**", "正文四", "---",
+            "## ⑨ No-Framework：不用框架怎么手写", "", "```java",
+            "interface Scorer { List<Score> score(String question); }", "```",
+            "", "**【怎么接】** 写在后面一节里，不该算到 6.1 头上"]
+    items, _ext = G.check_usage(head)
+    if len(items) == 1 and items[0]["iface"] is False and items[0]["wire"] is False:
+        r.ok('⑤ 件段边界（2.14）：后面一级节里的 `interface` 骨架与【怎么接】不再算进末件 '
+             '（iface=False / wire=False，均由本节自己决定）')
+    else:
+        r.fail('⑤ 件段越界（H24 复发）：末件把后面小节的内容算进自己 → %r'
+               % ({k: items[0][k] for k in ("iface", "wire")} if items else items,))
+
+    # 反向钉桩：**本节内**真的有 interface 骨架时，必须仍然认出来（别把边界修成"永不判抽象"）
+    own = ["## ⑥ 逐件讲解", "### 6.1 Bar —— 真抽象件（10 行）", "正文一", "正文二", "```java",
+           "public interface Bar { void run(); }", "```", "**【怎么用】** 用法", "**【上下游】** 上下游",
+           "**【怎么接】** 实现与注册", "---", "## ⑦ 调用链"]
+    items2, _ = G.check_usage(own)
+    if len(items2) == 1 and items2[0]["iface"] is True and items2[0]["wire"] is True:
+        r.ok('⑤ 件段边界（2.14）：件内自己的 `interface` 骨架仍被认出（iface/wire 都为真）')
+    else:
+        r.fail('⑤ 边界修过头了：件内自带的 interface 没被认出 → %r'
+               % ({k: items2[0][k] for k in ("iface", "wire")} if items2 else items2,))
+
+
 def main():
     print('=' * 88)
     print('技能文档一致性自检（skill_selfcheck.py）  根目录:', ROOT)
@@ -614,6 +649,8 @@ def main():
     check_vib_depth(r)
     print('\n⑫ ② 反向完整度的 ★ 标题链兜底自测（2.13 / H23）+ 真空通过钉桩')
     check_reverse_fallback(r)
+    print('\n⑬ ⑤ 件段边界自测（2.14 / H24）：后面小节的内容不许算进末件')
+    check_usage_boundary(r)
     print('\n' + '=' * 88)
     print('检查项 %d，失败 %d → %s' % (r.n, r.bad, 'PASS ✅' if r.bad == 0 else 'FAIL ❌'))
     print('=' * 88)
