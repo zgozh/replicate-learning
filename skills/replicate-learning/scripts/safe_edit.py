@@ -18,6 +18,7 @@
 命令行用法（**默认 dry-run，加 --apply 才写盘**）：
     python safe_edit.py --check FILE
     python safe_edit.py --file FILE --insert-before "### 6.2 " --block block.txt [--apply]
+    python safe_edit.py --file FILE --insert-at 1412 --block block.txt [--apply]
     python safe_edit.py --file FILE --replace 120 180 --block block.txt [--apply]
 
 --apply 会先留一份 `FILE.bak`（只在不存在时写，保住"第一次编辑之前"的原样），写盘后立即复检围栏配对。
@@ -110,6 +111,15 @@ def insert_before(lines, anchor_prefix, block):
     lines[at:at] = block.strip("\n").split("\n") + [""]
 
 
+def insert_at(lines, lineno, block):
+    """按 1-based 行号在**该行之前**插入（只插入，不碰旧行）。
+    什么时候用它而不是 insert_before()：当插入点的"文本锚点"会命中多处时——
+    讲解里到处都是 `---` 与 ```` ``` ````，只有行号能唯一定位（行号取自刚跑过的闸门/探针输出）。"""
+    if not (1 <= lineno <= len(lines) + 1):
+        raise SystemExit("[ABORT] 行号 %d 越界（文件 %d 行）" % (lineno, len(lines)))
+    lines[lineno - 1:lineno - 1] = block.strip("\n").split("\n")
+
+
 def safe_replace_range(lines, a, b, body):
     """替换 [a,b]（1-based，闭区间）。护栏：围栏事件序列必须与替换体一致，否则拒绝执行。"""
     old = lines[a - 1:b]
@@ -144,6 +154,7 @@ def main():
     ap.add_argument("--file")
     ap.add_argument("--check", metavar="FILE")
     ap.add_argument("--insert-before", metavar="锚点前缀")
+    ap.add_argument("--insert-at", type=int, metavar="行号")
     ap.add_argument("--replace", nargs=2, type=int, metavar=("A", "B"))
     ap.add_argument("--block", metavar="替换体文本文件")
     ap.add_argument("--apply", action="store_true", help="真正写盘（缺省只预览）")
@@ -163,15 +174,18 @@ def main():
         print("   [OK ] 配对无问题（权威判定仍以 gate_lecture ⓪ 为准）")
         return 0
 
-    if not a.file or (not a.insert_before and not a.replace):
-        ap.error("需要 --file 加 --insert-before 或 --replace（或单独用 --check）")
+    if not a.file or (not a.insert_before and not a.insert_at and not a.replace):
+        ap.error("需要 --file 加 --insert-before / --insert-at / --replace（或单独用 --check）")
     if not a.block:
         ap.error("需要 --block <替换体文本文件>")
     block = open(a.block, encoding="utf-8").read()
     lines = load(a.file)
     before = scan_fences(lines)
 
-    if a.insert_before:
+    if a.insert_at:
+        print("== 在 :%d 之前插入 %d 行" % (a.insert_at, block.strip().count("\n") + 1))
+        insert_at(lines, a.insert_at, block)
+    elif a.insert_before:
         hits = [i for i, l in enumerate(lines) if l.startswith(a.insert_before)]
         print("== 在 :%s 之前插入 %d 行（锚点命中 %d 处）"
               % (hits[0] + 1 if len(hits) == 1 else "?", block.strip().count("\n") + 1, len(hits)))
