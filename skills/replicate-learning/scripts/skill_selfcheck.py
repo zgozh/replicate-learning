@@ -24,6 +24,9 @@ ROOT = os.path.dirname(HERE)
 
 CIRCLED = '①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯'
 
+# 本脚本依赖的 gate 对外符号（check_tools 会逐条校验存在性——本脚本自己也受同一条规矩约束）
+GATE_API = ['USE_MARKS', 'WIRE_MARKS', 'IO_MARKS']
+
 
 def read(rel):
     p = os.path.join(ROOT, rel)
@@ -188,7 +191,13 @@ def check_ssot(r):
     ssot = json.load(io.open(p, encoding='utf-8'))
     skill = read('SKILL.md') or ''
     tpl = read('references/批次讲解全文模板.md') or ''
+    # 实现锚点的搜索范围 = gate_lecture.py + scripts/ 下所有工具（V3 之后有些条目由工具实现，如 GATE_API）
     gate = read('scripts/gate_lecture.py') or ''
+    tool_src = {}
+    for fn in sorted(os.listdir(HERE)):
+        if fn.endswith('.py'):
+            tool_src[fn] = read('scripts/' + fn) or ''
+    gate_all_txt = '\n'.join(tool_src.values())
     # SSOT 声明的层级只能是 L1/L2/L3
     bad_layer = [e['id'] for e in ssot['entries'] if e.get('layer') not in ('L1', 'L2', 'L3')]
     if bad_layer:
@@ -210,7 +219,8 @@ def check_ssot(r):
     miss_tpl = [e['id'] for e in ssot['entries']
                 if e.get('tpl') and e['tpl'] != '-' and e['tpl'] not in tpl]
     miss_gate = [e['id'] for e in ssot['entries']
-                 if e.get('gate') and e['gate'] != '-' and e['gate'] not in gate]
+                 if e.get('gate') and e['gate'] != '-' and e['gate'] not in gate
+                 and e['gate'] not in gate_all_txt]
     for tag, ids, where in (('SKILL.md', miss_doc, '文档锚点'), ('模板', miss_tpl, '模板锚点'),
                             ('gate', miss_gate, '实现锚点')):
         if ids:
@@ -228,6 +238,99 @@ def check_ssot(r):
         r.ok('spec/ 下文件均被 SKILL.md 的必读清单引用')
 
 
+def check_tools(r):
+    """⑦ 工具随技能发布（契约 V3 / 血证 H17）：
+    ① `scripts/` 下不留孤儿——每个工具都必须被 SKILL.md 或 spec/ 下某份文档引用
+       （否则"规程里写着要做的步骤，其执行工具没人知道在哪"，等于没有）；
+    ② 凡是 import 了 gate_lecture 的工具，必须声明 `GATE_API`（+可选 `GATE_GLOBALS_SET`），
+       且声明的符号在 gate 里确实存在——判据改动动了内部结构时，这里立刻报红，
+       而不是等下一个会话用错工具（`fix_lineno.py` 会**写回 NOTES 的行号**）。"""
+    gate_src = read('scripts/gate_lecture.py') or ''
+    docs = [('SKILL.md', read('SKILL.md') or '')]
+    specdir = os.path.join(ROOT, 'spec')
+    for fn in sorted(os.listdir(specdir)):
+        docs.append(('spec/' + fn, read('spec/' + fn) or ''))
+    tools = [fn for fn in sorted(os.listdir(HERE)) if fn.endswith('.py')]
+    orphan = [fn for fn in tools if not any(fn in t for _n, t in docs)]
+    if orphan:
+        r.fail('scripts/ 下有工具没被任何文档引用（有工具没人知道 = 等于没有）：%s' % '、'.join(orphan))
+    else:
+        r.ok('scripts/ 下 %d 个工具均被 SKILL.md 或 spec/ 引用（无孤儿）' % len(tools))
+
+    sys.path.insert(0, HERE)
+    import gate_lecture as G          # noqa: E402
+    bad = []
+    for fn in tools:
+        src = read('scripts/' + fn) or ''
+        if 'import gate_lecture' not in src:
+            continue
+        api = re.search(r'^GATE_API\s*=\s*\[(.*?)\]', src, re.M | re.S)
+        glb = re.search(r'^GATE_GLOBALS_SET\s*=\s*\[(.*?)\]', src, re.M | re.S)
+        if not api:
+            bad.append('%s 用了 gate 却没声明 GATE_API' % fn)
+            continue
+        names = re.findall(r"'([A-Za-z_][A-Za-z0-9_]*)'", api.group(1))
+        miss = [n for n in names if not hasattr(G, n)]
+        if glb:
+            for n in re.findall(r"'([A-Za-z_][A-Za-z0-9_]*)'", glb.group(1)):
+                if not re.search(r'^\s*global\s+%s\b' % n, gate_src, re.M):
+                    miss.append(n + '(缺 global 声明)')
+        if miss:
+            bad.append('%s → gate 里找不到 %s' % (fn, '、'.join(miss)))
+    if bad:
+        r.fail('工具依赖的 gate 符号对不上（判据改动动了内部结构）：%s' % '；'.join(bad))
+    else:
+        r.ok('声明了 GATE_API 的工具，其依赖符号在 gate 中全部存在')
+
+
+def check_safe_edit(r):
+    """⑧ safe_edit 护栏负向自测（血证 H14）：用当初**真实失败的做法**验证它会被拒绝。
+    这是"护栏本身也要被验证"的落地——否则它就是一句口号。合成用例，不依赖宿主项目。"""
+    sys.path.insert(0, HERE)
+    import safe_edit as S             # noqa: E402
+    base = ['# 标题', '```java', 'int a = 1;', '```', '尾部']
+
+    # ① 跨围栏区间替换成"纯内容"——H14 的原始错误做法，必须被拒
+    try:
+        S.safe_replace_range(list(base), 2, 4, 'int a = 1;')
+        r.fail('safe_edit 护栏失效：跨围栏区间被替换成纯内容时未拒绝（血证 H14 会重演）')
+    except SystemExit:
+        r.ok('safe_edit 护栏生效：跨围栏替换成纯内容 → 拒绝执行')
+
+    # ② 替换体写回围栏 → 必须通过，且结果与原内容一致
+    try:
+        got = list(base)
+        S.safe_replace_range(got, 2, 4, '```java\nint a = 1;\n```')
+        if got == base:
+            r.ok('safe_edit 正确替换体：带围栏的替换体通过且内容不变')
+        else:
+            r.fail('safe_edit 替换结果与预期不一致：%r' % (got,))
+    except SystemExit as e:
+        r.fail('safe_edit 误拒了带围栏的正确替换体：%s' % str(e)[:80])
+
+    # ③ 锚点不唯一 → 必须拒绝（防止插错位置）
+    try:
+        S.insert_before(['a', 'a'], 'a', 'x')
+        r.fail('safe_edit insert_before 锚点不唯一时未拒绝')
+    except SystemExit:
+        r.ok('safe_edit insert_before：锚点命中 ≠1 处 → 拒绝执行')
+
+    # ④ insert_before 不得改动任何旧行（insert-only 的核心承诺）
+    got = list(base)
+    S.insert_before(got, '尾部', 'X\nY')
+    if got[:4] == base[:4] and got.count('尾部') == 1:
+        r.ok('safe_edit insert_before：只插入、旧行逐字节不变')
+    else:
+        r.fail('safe_edit insert_before 改动了旧行：%r' % (got,))
+
+    # ⑤ --check 的体检函数必须能报出未闭合围栏
+    issues, _ev = S.scan_fences(['```java', 'int a = 1;'])
+    if issues:
+        r.ok('safe_edit --check：未闭合围栏能被报出（%s…）' % issues[0][:28])
+    else:
+        r.fail('safe_edit --check 漏报未闭合围栏')
+
+
 def main():
     print('=' * 88)
     print('技能文档一致性自检（skill_selfcheck.py）  根目录:', ROOT)
@@ -243,8 +346,12 @@ def main():
     check_deprecated(r)
     print('\n⑤ 交叉引用与文件引用')
     check_refs(r)
-    print('\n⑥ SSOT 对账（spec/00-质量契约.json ↔ SKILL ↔ 模板 ↔ gate）')
+    print('\n⑥ SSOT 对账（spec/00-质量契约.json ↔ SKILL ↔ 模板 ↔ gate/工具）')
     check_ssot(r)
+    print('\n⑦ 工具随技能发布（V3 / H17）：无孤儿 + 依赖符号存在')
+    check_tools(r)
+    print('\n⑧ safe_edit 护栏负向自测（H14）')
+    check_safe_edit(r)
     print('\n' + '=' * 88)
     print('检查项 %d，失败 %d → %s' % (r.n, r.bad, 'PASS ✅' if r.bad == 0 else 'FAIL ❌'))
     print('=' * 88)

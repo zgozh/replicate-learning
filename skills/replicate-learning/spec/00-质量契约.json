@@ -34,6 +34,7 @@
     {"id": "A6", "layer": "L2", "stmt": "⑥ 每件五层：问题一句话 / 源码 / 逐行要点表 / 边界与副作用 / 用法与接入", "gate": "check_usage", "doc": "必含**五层结构**", "tpl": "本文件要解决的一个问题", "blood": "H4"},
     {"id": "V1", "layer": "L1", "stmt": "判据变更必须：递增 GATE_VERSION + §6.6 登记 + 回归集判定不变 + 公告与存量工单", "gate": "GATE_VERSION", "doc": "判据版本与变更规程", "tpl": "-", "blood": "H11"},
     {"id": "V2", "layer": "L1", "stmt": "改技能后的 DoD：skill_selfcheck 全绿 → 回归集判定不变 → 四处副本同步并 commit+push", "gate": "skill_selfcheck", "doc": "skill_selfcheck", "tpl": "-", "blood": "H12"},
+    {"id": "V3", "layer": "L1", "stmt": "**规程的执行工具随技能发布**：`scripts/` 下每个工具都必须被文档引用（不留孤儿），工具对 `gate_lecture` 的依赖必须写成 `GATE_API` 清单并由 `skill_selfcheck.py` 校验存在性；改讲解文件只能用 `scripts/safe_edit.py` 的 insert-only 两种操作", "gate": "GATE_API", "doc": "工具随技能发布", "tpl": "-", "blood": "H17"},
     {"id": "P1", "layer": "L1", "stmt": "正文（代码围栏之外）里的 `Xxx.java:NN` 引用必须文件存在且行号在范围内；`6.x` 件标题声明的 `Xxx.java` 必须存在；`本仓类.method(` 的方法名必须在本仓源码里出现过", "gate": "check_prose", "doc": "散文符号真实性", "tpl": "散文符号", "blood": "H16"},
     {"id": "P2", "layer": "L3", "stmt": "正文里反引号包裹的 CamelCase 符号，若既非本仓类、也非源码 import 过的外部类型、也非白名单，则列入**待人工确认清单**（不判 FAIL）；白名单见 spec/散文符号白名单.txt", "gate": "check_prose", "doc": "待人工确认清单", "tpl": "散文符号", "blood": "H16"}
   ]
