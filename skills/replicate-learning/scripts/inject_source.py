@@ -74,7 +74,7 @@ def parse(path):
     return lines, out
 
 
-def build_block(src_root, rel, a, b, anno, lang):
+def build_block(src_root, rel, a, b, anno_in, lang):
     """从源文件逐行取码 → 生成带真实行号的代码块"""
     src = os.path.join(src_root, rel)
     if not os.path.isfile(src):
@@ -86,7 +86,15 @@ def build_block(src_root, rel, a, b, anno, lang):
             b -= 1
     if not (1 <= a <= b <= len(lines)):
         raise SystemExit("[ABORT] 行范围非法：%s %s-%s（文件共 %d 行）" % (rel, a, b, len(lines)))
-    stray = [k for k in (anno or {}) if not (a <= int(k) <= b)]
+    # anno 的键必须是**单行号**；区间标注（`// :L21-25`）取首行、非法键告警跳过（别让一个坏键崩掉注入）
+    anno = {}
+    for k, v in (anno_in or {}).items():
+        ks = str(k).split("-")[0].strip()
+        if ks.isdigit():
+            anno[ks] = v
+        else:
+            print("   ⚠ anno 键 %r 不是行号（区间请写首行号），已忽略" % k)
+    stray = [k for k in anno if not (a <= int(k) <= b)]
     if stray:
         print("   ⚠ anno 里有 %s 不在注入范围 %d-%d 内，这些注释会被忽略（检查是否写错了行号）"
               % ("、".join(sorted(stray)), a, b))
@@ -99,7 +107,7 @@ def build_block(src_root, rel, a, b, anno, lang):
         if ln.strip() == "":
             out.append(ln)
             continue
-        note = (anno or {}).get(str(no))
+        note = anno.get(str(no))
         out.append("%s  // :L%d  ←教材：%s" % (ln, no, note) if note else "%s  // :L%d" % (ln, no))
     return ["```" + lang] + out + ["```"], [(rel, a + off, ln) for off, ln in enumerate(body)]
 

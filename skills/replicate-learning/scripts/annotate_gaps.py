@@ -81,12 +81,12 @@ def scan(lecture, threshold=8):
             runs.append((run_start, keys[-1][0], cur))
         if not runs and cmts >= need:
             continue
-        # 最小标注点：每个连段在第 (threshold-1) 个关键行处补一条即可（补完该段长度就 < threshold）
+        # 最小标注点：**每 (threshold-1) 个关键行放一个**（一个连段可能有 20+ 行，只放一个点会留下第二段长连段）
         picks = []
         for a, b, _n in runs:
             seg = [k for k in keys if a <= k[0] <= b]
-            if len(seg) >= threshold:
-                picks.append(seg[threshold - 2])
+            for idx in range(threshold - 2, len(seg), threshold - 1):
+                picks.append(seg[idx])
         if cmts + len(picks) < need:                # 条数还不够 → 从前往后补足
             for n, l, ok in keys:
                 if len(picks) + cmts >= need:
