@@ -415,6 +415,31 @@ def check_vib_depth(r):
         r.fail('⑫ 深度判据只认 `【…】` 一种写法：中式标签被误判（labels=%d design=%s）'
                % (v['labels'], v['design']))
 
+    # ⑤ 边界钉桩（**故意断言"机械判据拦不住空话"**）：
+    #    判据只能判"有没有"，判不了"好不好"；判据越形式化，越容易被形式满足。
+    #    这份"空话版"满足全部四项机械判据 → FAIL 档放行，**这是已知盲区，必须让读者知道，
+    #    否则他会误信绿灯**；与此同时报告档必须报出 ≥8 条缺口（下限层+报告层的分工就在这里）。
+    #    将来若判据收紧到能拦住它，这条会失败 → 提示"盲区已收窄，请同步文档与存量工单"。
+    VACUOUS = ('【任务】实现功能\n【依赖】用现有的\n【要新增的类】几个类\n【核心约束】注意质量\n'
+               '【注释要求】写注释\n【验收标准】测试通过\n【禁止】不要出错\n【输出格式】给我代码\n'
+               '**设计要点**：这样写更好，因为更清晰。')
+    VAC_AUDIT = ('| # | 审查项 | 怎么查 |\n|---|---|---|\n'
+                 + '\n'.join('| %d | 检查一下 | grep 看看 |' % i for i in range(1, 7)))
+    v = G.vib_depth(seg(NEW8, VACUOUS, VAC_AUDIT))
+    passes_fail = ((not v['miss_class']) and v['labels'] > 0
+                   and v['design'] and v['audit_items'] >= 6)
+    gaps = sum([v['r2_pitfall'] < 3, (not v['r2_prompt'] and v['r2_items'] < 5),
+                not v['r3_table'], not v['r3_reject'], v['r4_steps'] < 6, not v['r4_bound'],
+                v['r5_rounds'] < 3, not v['r6_method'], v['r7_rounds'] < 1, v['r8_rules'] < 5])
+    if passes_fail and gaps >= 8:
+        r.ok('⑫ 深度判据的**已知盲区已钉桩**：空话版仍过 FAIL 档（质量主体在人工审读），'
+             '但报告档报出 %d 条缺口兜住' % gaps)
+    elif not passes_fail:
+        r.fail('⑫ 深度判据已收紧到能拦住"空话版"——盲区收窄了（好消息）！'
+               '请同步 SKILL §6.2.1、操作手册 §9 与存量工单')
+    else:
+        r.fail('⑫ 报告档漏报过多：空话版只被抓出 %d 条缺口（应 ≥8）' % gaps)
+
 
 def check_new_batch(r):
     """⑨ 新批次脚手架与模板**同源**（契约 V4）：骨架的节标题必须来自模板，且结构项由构造保证。
@@ -513,7 +538,7 @@ def main():
     check_new_batch(r)
     print('\n⑩ 源码块注入器端到端自测（H17 / H18）')
     check_inject_source(r)
-    print('\n⑪ ⑫ 内容深度判据自测（S12 / H20）')
+    print('\n⑪ ⑫ 内容深度判据自测（S12 / H20）+ 已知盲区钉桩')
     check_vib_depth(r)
     print('\n' + '=' * 88)
     print('检查项 %d，失败 %d → %s' % (r.n, r.bad, 'PASS ✅' if r.bad == 0 else 'FAIL ❌'))
