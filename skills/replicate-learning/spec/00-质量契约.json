@@ -1,6 +1,6 @@
 {
   "_说明": "质量契约 SSOT（单一真源）。改任何要求/判据，先改这里，再改 SKILL / references 模板 / gate 脚本，最后跑 skill_selfcheck.py 对账。字段：id=条目号；layer=L1 机械门 / L2 内容契约 / L3 教学增益；stmt=判据原文；gate=闸门实现锚点（脚本内可搜到的标识）；doc=必须在 SKILL.md 里能找到的原文锚点；tpl=必须在 references/批次讲解全文模板.md 里能找到的原文锚点；blood=血证编号（见 spec/血证档案.md）。用 JSON 而非 YAML 是为了零依赖解析（selfcheck 直接 json.load）。",
-  "version": "2.11",
+  "version": "2.12",
   "entries": [
     {"id": "S1", "layer": "L1", "stmt": "批次讲解一级节数 = 17（①~⑯ + 索引）", "gate": "sections", "doc": "节数 = **17**", "tpl": "① 在系统全景中的位置", "blood": "H9"},
     {"id": "S2", "layer": "L1", "stmt": "代码围栏数量为偶数（markdown 未闭合即 FAIL）", "gate": "fences", "doc": "围栏**偶数**", "tpl": "```java", "blood": "H8"},
@@ -25,7 +25,7 @@
     {"id": "U7", "layer": "L2", "stmt": "⑤ 在件内的**位置**：【怎么用】必须排在「逐行要点表」之后、件内 `---` 之前（位置错了读者会把「怎么用」当成上一段的尾巴或下一节的内容）", "gate": "pos_bad", "doc": "顺序即结构", "tpl": "位置**：本三段固定放在**件末", "blood": "H15"},
     {"id": "R1", "layer": "L1", "stmt": "★ 类源文件有效行覆盖 ≥99.5%（★ 在自身或父标题均计入；拆多块按全批并集算）", "gate": "check_reverse", "doc": "≥99.5%", "tpl": "★", "blood": "H5"},
     {"id": "D1", "layer": "L1", "stmt": "关键行连续 ≥8 行无中文注释 = 密度不足", "gate": "check_density", "doc": "连续 ≥8 行", "tpl": "逐行", "blood": "H2"},
-    {"id": "D2", "layer": "L1", "stmt": "教学注释条数 ≥ 关键行数 ÷ 12", "gate": "need", "doc": "关键行÷12", "tpl": "逐行要点表", "blood": "H2"},
+    {"id": "D2", "layer": "L1", "stmt": "教学注释条数 ≥ 关键行数 ÷ 12；★ 类不得低于 5 条——**但一律以该块的关键行数为上限**（`min(key_n, …)`）。原式对「关键行 < 5 的 ★ 块」要求 5 条注释，而注释只能落在关键行上、最多只有 key_n 条 → **数学上不可满足**；实测全库 245 个 ③ 不达标块里有 27 个（11%）属于这种（血证 H22）", "gate": "need", "doc": "关键行÷12", "tpl": "逐行要点表", "blood": "H22"},
     {"id": "D3", "layer": "L1", "stmt": "★ 类每个方法签名行或相邻行必须有注释（按整类判定）", "gate": "check_sig", "doc": "★类每方法签名行", "tpl": "★", "blood": "H2"},
     {"id": "N1", "layer": "L1", "stmt": "`// :Lnn` 指向的行内容必须就是该行；漂移 = 0 处（行号由注入脚本生成，禁止手打）", "gate": "check_lineno", "doc": "漂移 = 0 处", "tpl": "真实行号", "blood": "H3"},
     {"id": "A1", "layer": "L2", "stmt": "教材补注一律 `// :L<真实行号>  ←教材：<说明>`；`// 【教材补注】` 与行尾中文直注已作废", "gate": "ANNO", "doc": "←教材：", "tpl": "←教材：", "blood": "H1"},

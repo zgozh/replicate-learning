@@ -55,7 +55,7 @@ import tarfile
 import subprocess
 import collections
 
-GATE_VERSION = "2.11"    # 2.11：⑫ 内容深度（八类语义/八段/设计要点/审查清单）——⑫ 是唯一跨项目可复用的那一节
+GATE_VERSION = "2.12"    # 2.12：③ 注释密度的 need 加 key_n 上限（原式对"关键行<5 的 ★ 块"不可满足，血证 H22）
                          # 2.5：免检护栏认两种行号格式（`// :Lnn` 与作废的 `// :N`），堵住"标了行号却能免检"的漏洞
                          # 2.6：⓪ 增围栏**配对**体检（原只查奇偶；配对错位会让整段正文被吞进代码块却仍 PASS）
                          # 2.7：⑤ 增**位置**判据（【怎么用】必须在「逐行要点表」之后、件内 `---` 之前，否则读者会把它读成下一节）
@@ -538,7 +538,10 @@ def check_density(blocks, by_class=None, rev=None):
         mx = max(mx, cur)
         cmts = sum(1 for _, ok in keys if ok)
         star = block_star(sect, chain)
-        need = max(5, math.ceil(key_n / 12)) if star else math.ceil(key_n / 12)
+        # 2.12（血证 H22）：`max(5, …)` 对 ★ 块无条件取 5，而注释只能落在**关键行**上——
+        # 于是"关键行 < 5 的 ★ 块"要求 5 条注释却最多只能有 key_n 条，**数学上不可满足**。
+        # 实测全库 245 个 ③ 不达标块里有 27 个（11%）属于这种；用 min(key_n, …) 封顶。
+        need = min(key_n, max(5, math.ceil(key_n / 12))) if star else math.ceil(key_n / 12)
         rows.append(dict(start=start, sect=sect, exempt=exempt, key_lines=key_n,
                          comments=cmts, max_run=mx, bad_runs=runs,
                          need=need, star=star))
