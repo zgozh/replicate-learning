@@ -9,8 +9,13 @@
 核心护栏：`safe_replace_range()` 比对"被替换区间"与"替换体"的**围栏事件序列**
 （每行是开 / 闭 / 块内带标签，各带语言标签）；两者不一致**直接拒绝执行**并打印差异。
 
+**整节重写用 `safe_replace_section()`（血证 H19）**：`safe_replace_range` 的"事件序列必须一致"
+在"把一整节散文换成含更多代码块的新版本"上永远不成立，于是整节重写只剩手写区间替换一条路——
+那正是 H14 的复发路径。专用模式的护栏换成三条更贴合本操作的检查（S1 区间两端在块外 /
+S2 区间自身自洽 / S3 替换体与拼接后全文自洽且无 A/D/H3 问题）。
+
 库用法（写驱动脚本时）：
-    from safe_edit import load, save, insert_before, safe_replace_range
+    from safe_edit import load, save, insert_before, safe_replace_range, safe_replace_section
     lines = load(LEC)
     insert_before(lines, "### 6.2 ", block)      # 首选：只插入，不碰任何旧行
     save(lines, LEC)                             # tmpnew → os.replace
@@ -20,6 +25,7 @@
     python safe_edit.py --file FILE --insert-before "### 6.2 " --block block.txt [--apply]
     python safe_edit.py --file FILE --insert-at 1412 --block block.txt [--apply]
     python safe_edit.py --file FILE --replace 120 180 --block block.txt [--apply]
+    python safe_edit.py --file FILE --replace-section 3866 4037 --block new.md [--apply]
 
 --apply 会先留一份 `FILE.bak`（只在不存在时写，保住"第一次编辑之前"的原样），写盘后立即复检围栏配对。
 """
@@ -137,6 +143,32 @@ def safe_replace_range(lines, a, b, body):
     lines[a - 1:b] = new
 
 
+def safe_replace_section(lines, a, b, body):
+    """整节重写（散文重写专用）：替换 [a,b]。
+
+    与 `safe_replace_range()` 的区别：这里**不要求**新旧围栏事件一一对应——整节重写必然引入
+    更多代码块，那条件在本操作上永远不成立。改用三条更贴合本操作的硬检查：
+      S1 区间两端必须在块外（否则会把某个代码块从中间截断）；
+      S2 被替换区间自身围栏必须自洽（在块内开始或结束都拒）；
+      S3 替换体自身、以及"拼接后的全文"，都必须围栏自洽且无 A/D/H3 问题。
+    血证 H19：本模式不存在时，改整节只能手写区间替换——那正是 H14 的复发路径。"""
+    old = lines[a - 1:b]
+    new = body.strip("\n").split("\n")
+    if fence_seq(lines[:a - 1])[1]:
+        raise SystemExit("[ABORT] 区间起点 :%d 落在代码块内（H19/S1）：整节重写不允许截断代码块" % a)
+    if fence_seq(lines[:b])[1]:
+        raise SystemExit("[ABORT] 区间终点 :%d 落在代码块内（H19/S1）：整节重写不允许截断代码块" % b)
+    if fence_seq(old)[1]:
+        raise SystemExit("[ABORT] 被替换区间 :%d-%d 自身围栏不自洽（H19/S2）" % (a, b))
+    ni, _ = scan_fences(new)
+    if ni:
+        raise SystemExit("[ABORT] 替换体围栏不自洽（H19/S3）：\n   " + "\n   ".join(ni[:6]))
+    ai, _ = scan_fences(lines[:a - 1] + new + lines[b:])
+    if ai:
+        raise SystemExit("[ABORT] 拼接后全文围栏不自洽（H19/S3）：\n   " + "\n   ".join(ai[:6]))
+    lines[a - 1:b] = new
+
+
 def _report(path, before, after):
     print("   围栏事件：改前 %d 个 → 改后 %d 个" % (len(before[1]), len(after[1])))
     if after[0]:
@@ -156,6 +188,8 @@ def main():
     ap.add_argument("--insert-before", metavar="锚点前缀")
     ap.add_argument("--insert-at", type=int, metavar="行号")
     ap.add_argument("--replace", nargs=2, type=int, metavar=("A", "B"))
+    ap.add_argument("--replace-section", nargs=2, type=int, metavar=("A", "B"),
+                    help="整节重写（允许引入更多代码块；护栏见 safe_replace_section）")
     ap.add_argument("--block", metavar="替换体文本文件")
     ap.add_argument("--apply", action="store_true", help="真正写盘（缺省只预览）")
     a = ap.parse_args()
@@ -174,8 +208,8 @@ def main():
         print("   [OK ] 配对无问题（权威判定仍以 gate_lecture ⓪ 为准）")
         return 0
 
-    if not a.file or (not a.insert_before and not a.insert_at and not a.replace):
-        ap.error("需要 --file 加 --insert-before / --insert-at / --replace（或单独用 --check）")
+    if not a.file or (not a.insert_before and not a.insert_at and not a.replace and not a.replace_section):
+        ap.error("需要 --file 加 --insert-before / --insert-at / --replace / --replace-section（或单独用 --check）")
     if not a.block:
         ap.error("需要 --block <替换体文本文件>")
     block = open(a.block, encoding="utf-8").read()
@@ -191,9 +225,15 @@ def main():
               % (hits[0] + 1 if len(hits) == 1 else "?", block.strip().count("\n") + 1, len(hits)))
         insert_before(lines, a.insert_before, block)
     else:
-        x, y = a.replace
-        print("== 替换 :%d-%d（%d 行）→ %d 行" % (x, y, y - x + 1, block.strip().count("\n") + 1))
-        safe_replace_range(lines, x, y, block)
+        if a.replace_section:
+            x, y = a.replace_section
+            print("== 整节重写 :%d-%d（%d 行）→ %d 行"
+                  % (x, y, y - x + 1, block.strip().count("\n") + 1))
+            safe_replace_section(lines, x, y, block)
+        else:
+            x, y = a.replace
+            print("== 替换 :%d-%d（%d 行）→ %d 行" % (x, y, y - x + 1, block.strip().count("\n") + 1))
+            safe_replace_range(lines, x, y, block)
 
     after = scan_fences(lines)
     _report(a.file, before, after)

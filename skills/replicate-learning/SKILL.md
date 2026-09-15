@@ -20,7 +20,7 @@ description: 当用户要求学习某个本地或开源项目、深度拆解项�
 > **改文件的四条工具纪律（血证 H14 / H15 / H17 / H18，动手前先读）**：
 > ① **改代码块只能"插入"，不能"整段替换"**——用区间替换时若区间跨了围栏（开头 ```` ```java ````、结尾 ```` ``` ````），替换体必须把围栏一并原样写回；更稳的做法是一律改成"在锚点前插入"，完全不碰旧行。
 > ② **改完立即复检围栏配对**，再跑闸门：`fence_scan()` 会报"块内又出现带语言标签的围栏 / 标题被吞 / 结束时未闭合"三类。**只数围栏个数是不够的**——把一对围栏的开闭互换后个数照样是偶数。
-> ③ **这两条纪律由工具兜住，别靠记性**：所有对讲解文件的写操作走 `scripts/safe_edit.py`（`insert_before()` 首选；`safe_replace_range()` 会比对"被替换区间"与"替换体"的**围栏事件序列**，不一致直接拒绝执行）。命令行 `python scripts/safe_edit.py --check <文件>` 立刻体检配对，`--file … --insert-before … --block …` 缺省 dry-run、加 `--apply` 才写盘（并留 `.bak`）。
+> ③ **这两条纪律由工具兜住，别靠记性**：所有对讲解文件的写操作走 `scripts/safe_edit.py`（`insert_before()` 首选；`safe_replace_range()` 会比对"被替换区间"与"替换体"的**围栏事件序列**，不一致直接拒绝执行；**整节重写**——把一整节换成含更多代码块的新版本——改用 `safe_replace_section()` / `--replace-section`，它按 S1 区间两端在块外 / S2 区间自洽 / S3 替换体与拼接后全文自洽三道检查把关，血证 H19）。命令行 `python scripts/safe_edit.py --check <文件>` 立刻体检配对，`--file … --insert-before … --block …` 缺省 dry-run、加 `--apply` 才写盘（并留 `.bak`）。
 > ④ **新批次一律从骨架起写**（契约 V4）：`scripts/new_batch.py` 从模板抽骨架（17 节 / ⑦.5 / ⑫ 八条八段 / 无自指 / 无占位**由构造保证**），源码块用 `scripts/inject_source.py` 注入——**行号由脚本从源文件取，禁止手打**。
 
 > **层级说明**：L1/L2/L3 分的是"**谁来负责判定**"（机械闸门 / 人读 / 人审抽样），**不是"哪些件可以少讲"**——
@@ -642,6 +642,7 @@ python "<skill>/scripts/gate_lecture.py" "$F" --src <源码根目录> [--snapsho
 | 日期 | 晋升了什么 | 为什么（血证） | 自检锚点 |
 |---|---|---|---|
 | 2026-09-16 | `safe_edit.py`（insert-only + 围栏事件序列比对）、`callsite.py`（调用点提取）、`fix_lineno.py`（行号纠偏 + `// :N` 升级）、`gate_all.py`（全库记分卡 + `--baseline` 回归比对）从宿主项目临时目录移入 `scripts/`；参数化 `--src/--root`，去掉硬编码路径 | H17：执行规程的工具不在技能里 → §6.6 的"回归集判定不变"没有可复用的执行体，§5 的调用点提取指向一个被 `.gitignore` 忽略的目录；`fix_lineno`/`gate_all` 摸 gate 内部 19/16 个符号却无人看管 | V3 + `skill_selfcheck.py` 三项新检查：工具不留孤儿、`GATE_API` 依赖符号存在性、`safe_edit` 护栏负向自测 |
+| 2026-09-16 | `safe_edit.py` 增 **整节重写模式** `safe_replace_section()` / CLI `--replace-section`（S1 区间两端必须在块外 / S2 区间自身围栏自洽 / S3 替换体与拼接后全文自洽且无 A/D/H3） | H19：`--replace` 的"围栏事件序列必须逐一相等"护栏，在"把一整节散文换成含更多代码块的新版本"上**永远不成立**，于是整节重写只剩手写区间替换一条路——**那正是 H14 的复发路径**（过严的护栏 = 把人逼去绕过护栏） | `skill_selfcheck.py` ⑧ 组新增 3 项自测（正向：代码块 1→2 必须通过；负向：区间起点在块内 / 替换体不闭合必须被拒），检查项 34 → **37** |
 
 **改技能文档本身的 Definition of Done**：`python scripts/skill_selfcheck.py` 全绿（含工具护栏与依赖符号）
 → 回归集判定不变（`scripts/gate_all.py --baseline` 逐字段一致）→ 同步四处副本（源仓库 commit+push、workbuddy 拷贝、dsh-toolkit commit+push、宿主项目内脚本副本）。
@@ -711,8 +712,8 @@ NOTES/
   **每批落盘后、commit 前必跑**；免检规则与用法片段边界见 §6.4 判定表下的说明。
 - `scripts/skill_selfcheck.py` —— **技能文档一致性自检**（SSOT↔SKILL↔模板↔gate 对账 + 作废写法 + 交叉引用 + 工具护栏与依赖符号）。
   **改完技能、同步副本之前必须先跑它，全绿才算改完**。
-- `scripts/safe_edit.py` —— **改讲解文件的唯一写入口**（血证 H14 的护栏）：`insert_before()` 只插入不碰旧行；`safe_replace_range()` 比对围栏事件序列，不一致即拒。
-  `python scripts/safe_edit.py --check <文件>` ｜ `--file <文件> --insert-before <锚点> --block <文本>` ｜ `--replace <A> <B> --block <文本>`（缺省 dry-run，`--apply` 写盘并留 `.bak`）。**配套自测在 `skill_selfcheck.py` 里（负向：跨围栏替换必须被拒）。**
+- `scripts/safe_edit.py` —— **改讲解文件的唯一写入口**（血证 H14 / H19 的护栏）：`insert_before()` 只插入不碰旧行；`safe_replace_range()` 比对围栏事件序列，不一致即拒；**整节重写**用 `safe_replace_section()`（S1 区间两端在块外 / S2 区间自洽 / S3 替换体与拼接后全文自洽）。
+  `python scripts/safe_edit.py --check <文件>` ｜ `--file <文件> --insert-before <锚点> --block <文本>` ｜ `--replace <A> <B> --block <文本>` ｜ `--replace-section <A> <B> --block <文本>`（缺省 dry-run，`--apply` 写盘并留 `.bak`）。**配套自测在 `skill_selfcheck.py` 里（负向：跨围栏替换必须被拒；正向：整节重写引入更多代码块必须通过）。**
 - `scripts/callsite.py` —— **调用点提取**（⑤ 补【怎么用】/【怎么接】的证据来源）：给定类/方法名，输出「声明 / 使用调用点（附所在方法与其声明行）/ 仅提及」三段。
   `python scripts/callsite.py <符号> --src <源码根> [--roots rag,framework] [--out 清单.txt]`。**调用现场一律以它的输出为准，不凭印象**。
 - `scripts/fix_lineno.py` —— **行号标注修正**（④）：按"该行内容在源文件里唯一定位"重写 `// :Lnn`，并把作废的 `// :N` 升级为 `:Lnn`；位于 ⑤ 标记之下的块只报不改（避免把教学合成片段变成"声明自己是源码"）。

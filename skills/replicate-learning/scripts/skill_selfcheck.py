@@ -333,6 +333,32 @@ def check_safe_edit(r):
     else:
         r.fail('safe_edit --check 漏报未闭合围栏')
 
+    # ⑥ 整节重写（H19）：引入**更多**代码块必须通过——这正是 safe_replace_range 做不到的事
+    body = '# 标题2\n```java\nint a = 1;\n```\n中间\n```java\nint b = 2;\n```\n尾部'
+    try:
+        got = list(base)
+        S.safe_replace_section(got, 1, 5, body)
+        if len([l for l in got if l.startswith('```')]) == 4 and got[0] == '# 标题2':
+            r.ok('safe_edit 整节重写：代码块 1 个 → 2 个仍通过（H19 的核心诉求）')
+        else:
+            r.fail('safe_edit 整节重写结果不符预期：%r' % (got,))
+    except SystemExit as e:
+        r.fail('safe_edit 整节重写误拒了合法替换：%s' % str(e)[:80])
+
+    # ⑦ 整节重写 S1：区间起点落在代码块内 → 必须拒绝（否则会截断代码块）
+    try:
+        S.safe_replace_section(list(base), 3, 5, '纯文本')
+        r.fail('safe_edit 整节重写未拒绝"起点在块内"的区间（S1 失效）')
+    except SystemExit:
+        r.ok('safe_edit 整节重写 S1：区间起点在代码块内 → 拒绝执行')
+
+    # ⑧ 整节重写 S3：替换体围栏不闭合 → 必须拒绝
+    try:
+        S.safe_replace_section(list(base), 1, 5, '# 标题2\n```java\nint a = 1;')
+        r.fail('safe_edit 整节重写未拒绝"替换体围栏不闭合"（S3 失效，H14 会重演）')
+    except SystemExit:
+        r.ok('safe_edit 整节重写 S3：替换体围栏不闭合 → 拒绝执行')
+
 
 def check_new_batch(r):
     """⑨ 新批次脚手架与模板**同源**（契约 V4）：骨架的节标题必须来自模板，且结构项由构造保证。
@@ -425,7 +451,7 @@ def main():
     check_ssot(r)
     print('\n⑦ 工具随技能发布（V3 / H17）：无孤儿 + 依赖符号存在')
     check_tools(r)
-    print('\n⑧ safe_edit 护栏负向自测（H14）')
+    print('\n⑧ safe_edit 护栏负向自测（H14 / H19）')
     check_safe_edit(r)
     print('\n⑨ 新批次脚手架与模板同源（V4）')
     check_new_batch(r)
