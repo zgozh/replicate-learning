@@ -126,9 +126,23 @@ def insert_at(lines, lineno, block):
     lines[lineno - 1:lineno - 1] = block.strip("\n").split("\n")
 
 
+def warn_section_heading(old):
+    """改前提醒：被替换区间里含一级节标题（`## `）时打一条警告。
+
+    血证 H21：用"整行替换"脚本改 ⑯ 的判据版本时，只按**子串**匹配就整行覆盖，
+    把 `## ⑯ 教材质量自检（…）` 这一行换成了注释文字 → **节数 17 → 16**，
+    被闸门 ⓪ 当场拦下。工具这里不 ABORT（替换节标题可能是正当操作），但必须先出声——
+    它会让"改一行文字"和"换掉一节标题"这两件事在动手前就分开。"""
+    n = sum(1 for l in old if l.startswith("## "))
+    if n:
+        print("   ⚠ 被替换区间含 %d 个一级节标题（`## `）——若只想改其中一行文字，请只替换那一行；"
+              "整区间替换会连标题一起换掉（血证 H21：节数会从 17 变少）" % n)
+
+
 def safe_replace_range(lines, a, b, body):
     """替换 [a,b]（1-based，闭区间）。护栏：围栏事件序列必须与替换体一致，否则拒绝执行。"""
     old = lines[a - 1:b]
+    warn_section_heading(old)
     new = body.strip("\n").split("\n")
     so, oo = fence_seq(old)
     sn, on = fence_seq(new)
@@ -153,6 +167,7 @@ def safe_replace_section(lines, a, b, body):
       S3 替换体自身、以及"拼接后的全文"，都必须围栏自洽且无 A/D/H3 问题。
     血证 H19：本模式不存在时，改整节只能手写区间替换——那正是 H14 的复发路径。"""
     old = lines[a - 1:b]
+    warn_section_heading(old)
     new = body.strip("\n").split("\n")
     if fence_seq(lines[:a - 1])[1]:
         raise SystemExit("[ABORT] 区间起点 :%d 落在代码块内（H19/S1）：整节重写不允许截断代码块" % a)

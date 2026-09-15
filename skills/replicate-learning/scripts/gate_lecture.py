@@ -728,7 +728,7 @@ def vib_depth(seg):
         # 报告档
         r2_prompt="```" in r2,
         r2_items=len(re.findall(r"^\s*\d+[\.、)]\s", r2, re.M)),
-        r2_pitfall=len(re.findall(r"不先看|没先看|不看 |如果不看|翻车|后果是", r2)),
+        r2_pitfall=len(re.findall(r"不先看|没先看|不看|不确认|不查|不想清楚|不核对|不先确认|不验|翻车|后果是", r2)),
         r3_table=any(m.group(0).strip().count("\n") + 1 >= 3
                      for m in re.finditer(r"(?:^\|.*\|\s*$\n?)+", r3, re.M)),
         r3_reject=bool(re.search(r"为什么不是|不选|落选|否决|不用它|为什么不选", r3)),
