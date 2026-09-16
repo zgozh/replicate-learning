@@ -45,6 +45,28 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from safe_edit import load, save, safe_replace_range, scan_fences, FENCE  # noqa: E402
 
+# ── 注释前缀按语言取（2.22，工具修） ─────────────────────────────────────────
+# 为什么必须按语言取：原实现把前缀**写死成 `//`**，于是把它用在 Python / Shell / YAML 上会产出
+# **非法语法**——例如 `PORT="${1:-60}"  // :L17`：在 bash 里 `//` 不是注释，是"执行一个叫 `//` 的命令"。
+# 实测（deer-flow，2026-09-16）首跑即撞上，只能临时改用项目内的替代注入器；
+# 本处修正是把它收回技能内（"每个新项目都得重建一遍替代件"正是血证 H17 的同一个坑）。
+HASH_LANGS = {"bash", "sh", "shell", "zsh", "python", "py", "yaml", "yml", "toml", "conf", "ini",
+              "dockerfile", "dotenv", "makefile", "mk", "make", "text", "plaintext", "txt"}
+DASH_LANGS = {"sql", "haskell", "lua"}
+NO_ANNO_LANGS = {"cmd", "bat", "batch"}   # cmd 的 `rem`/`& rem` 插进 `for (...)` 块内会破坏解析
+
+
+def anno_prefix(lang):
+    """按语言返回注释前缀；返回 None 表示该语言**不做内联标注**（加了会改变语义）。"""
+    l = (lang or "").lower()
+    if l in NO_ANNO_LANGS:
+        return None
+    if l in HASH_LANGS:
+        return "#"
+    if l in DASH_LANGS:
+        return "--"
+    return "//"          # 缺省（C 系与未知语言沿用旧行为，保证存量 JAVA 批次一字不变）
+
 
 def read_lines(path):
     with open(path, encoding="utf-8") as f:
@@ -101,14 +123,27 @@ def build_block(src_root, rel, a, b, anno_in, lang):
     body = lines[a - 1:b]
     while body and body[-1].strip() == "":
         body.pop()
-    out = []
+    prefix = anno_prefix(lang)
+    out, skipped = [], 0
     for off, ln in enumerate(body):
         no = a + off
         if ln.strip() == "":
             out.append(ln)
             continue
+        # 两种"不能标"的情况（2.22 新增，均为实测踩到）：
+        # ① 该语言不支持行尾注释（cmd）：标了会破坏 `for (...)` 块的解析；
+        # ② 行尾是反斜杠续行（shell/bash/ts 的常见写法）：bash **先处理续行再处理注释**，
+        #    追加任何字符都会让续行断裂、改变语义（实测 serve.sh 有 12 行、dev-entrypoint.sh 有 10 行）。
+        # 这两种行仍然**逐字注入**（保真不受影响），只是不带行号标注与教材注释。
+        if prefix is None or ln.rstrip().endswith("\\"):
+            out.append(ln)
+            skipped += 1
+            continue
         note = anno.get(str(no))
-        out.append("%s  // :L%d  ←教材：%s" % (ln, no, note) if note else "%s  // :L%d" % (ln, no))
+        out.append("%s  %s :L%d  ←教材：%s" % (ln, prefix, no, note) if note
+                   else "%s  %s :L%d" % (ln, prefix, no))
+    if skipped:
+        print("   ℹ %s：%d 行不做内联标注（该语言不支持行尾注释，或行尾是反斜杠续行）" % (rel, skipped))
     return ["```" + lang] + out + ["```"], [(rel, a + off, ln) for off, ln in enumerate(body)]
 
 

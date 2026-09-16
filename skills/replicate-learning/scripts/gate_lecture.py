@@ -60,7 +60,8 @@ import tarfile
 import subprocess
 import collections
 
-GATE_VERSION = "2.21"    # 2.21：新增**记录类形态判据**（is_record / check_record_shape）——整理批、进行中记录、草稿这类产物
+GATE_VERSION = "2.22"    # 2.22：注释标记**按语言取前缀**（`ANNO` / `L_ANNO` 认 `//` `#` `--`）——修"写对了却不认"
+                         # 2.21：新增**记录类形态判据**（is_record / check_record_shape）——整理批、进行中记录、草稿这类产物
                          #       **既不该按 17 节判、也不能没人管**：不立判据时它落在
                          #       「教材标志 <3 → 普通文档」的灰区，静默逃过一切形态约束（H23/H25 同族）；
                          #       三项：R1 状态行（状态或日期）/ R2 未完成与下一步清单 >=2 条 / R3 不冒充成品；
@@ -103,7 +104,16 @@ GATE_VERSION = "2.21"    # 2.21：新增**记录类形态判据**（is_record / 
                          #      直接判 FAIL 会让"绿"清零；先靠 sync_gate_result.py 补存量，再升 FAIL（血证 H15）
 
 # ── 归一化 ────────────────────────────────────────────────────────────────
-ANNO = re.compile(r"//\s*:L?(\d+(?:-\d+)?)[ \t]*(.*)$")
+ANNO = re.compile(r"(?://|#|--)\s*:L?(\d+(?:-\d+)?)[ \t]*(.*)$")
+# ↑ 2.22：**注释标记按语言取前缀**，不再只认 `//`。
+#   为什么必须改：本技能已被用到 Python / TypeScript / Shell / YAML 项目上，
+#   而这些语言的注释前缀是 `#`（YAML/Shell/Python/TOML）或 `--`（SQL）。
+#   只认 `//` 的后果不是"少检一点"，而是**检查整组失效却照样打印 PASS**：
+#   实测（deer-flow 阶段1 批次2，2026-09-16）6 个注入块里 5 个是 YAML，
+#   行尾写的是 `# :L54  ←教材：…`，于是 ③ 注释密度把 221 条真实教材注释**一条都没认出来**
+#   （has_cjk_comment 走 anno_text 分支返回空），直接判 FAIL —— 即
+#   **"写对了却不认"**，与 H23/H25（"没写却不查"）是同一个根因的两个方向。
+#   安全性：`#` 后**必须跟 `:`**，所以 YAML 里 `# 2026` 这类普通注释不会被误认成行号标注。
 CJK = re.compile(r"[\u4e00-\u9fff]")
 TRAIL_CMT = re.compile(r"(\s+(//|#|--).*)$")
 CMT_LINE = re.compile(r"^\s*(//|/\*|\*|#|--)")
@@ -410,8 +420,11 @@ def snap_file_lines(rel):
 
 
 # ── 检查 ①：正向保真度 ───────────────────────────────────────────────────
-L_ANNO = re.compile(r"//\s*:L?\d+")   # 两种格式都算"标了行号"：`// :Lnn`（现行）与 `// :N`（作废但存量 36 文件/7315 处在用）。
+L_ANNO = re.compile(r"(?://|#|--)\s*:L?\d+")   # 两种格式都算"标了行号"：`// :Lnn`（现行）与 `// :N`（作废但存量 36 文件/7315 处在用）。
                                       # 2.5 修：此前只认带 L 的格式，旧格式标了行号却能混进免检（护栏漏洞，实测当时 0 个块命中）
+                                      # 2.22 修：注释标记按语言取前缀（`//` / `#` / `--`），与 ANNO 同源。
+                                      #   `is_exempt` 用它判"命中免检标记但块内带行号 = 声明自己是源码原文 → 不豁免"，
+                                      #   只认 `//` 时，YAML/Shell 块里的 `# :Lnn` 会被当成"没标行号"而**错误豁免**。
 
 
 def is_exempt(sect, h2, mk="", bl=None):
@@ -991,10 +1004,33 @@ def check_record_shape(lines):
                        "但状态行没写「未完成/草稿/进行中」——半成品不许按记录类混过去")
     return bad
 
+def _prose_lines(lines):
+    """剔除代码围栏内部的那些行（2.22）。
+
+    为什么需要它：`^## ` 节数计数与节标题形态检查原本扫**全文**，而**逐字注入的源码里
+    完全可能有 markdown 风格的注释行**。实测（deer-flow 阶段1 批次1，2026-09-16）：
+    `Makefile:64` 是分节注释 `## Setup & Diagnosis`，注入后它逐字以 `## ` 开头 →
+    节数从 17 变 **18** → ⓪ `[FAIL] 节数 18 ≠ 17`；更隐蔽的是它把 ⑥6.1 的**件段"切断"**了
+    （件段边界判据见 2.14：件段不得越过一级节标题），连带使 ⑤ 误报
+    「缺【怎么用】/【缺【上下游】」——一个源码注释引发三处误判。
+
+    源码是**逐字注入**的（保真是硬要求），改不了；能改的是"**哪里算正文**"这个判定。
+    """
+    out, inside = [], False
+    for l in lines:
+        if re.match(r"^\s*`{3,}", l):
+            inside = not inside
+            continue
+        if not inside:
+            out.append(l)
+    return out
+
+
 def check_structure(lines, is_lec):
     """is_lec=True 才判教材批的结构（总览/索引/记录/参照物类文件跳过）"""
     txt = "\n".join(lines)
-    sec = len([l for l in lines if re.match(r"^## ", l)])
+    prose = _prose_lines(lines)                     # 2.22：节数只在正文里数（围栏内是源码，不是节）
+    sec = len([l for l in prose if re.match(r"^## ", l)])
     fences = len([l for l in lines if re.match(r"^\s*`{3,}", l)])
     fence_bad, fence_open = fence_scan(lines)
     # 占位符只在**代码块内**统计（正文里"残留检查：TODO 0"这类描述句不该误报）
@@ -1026,7 +1062,7 @@ def check_structure(lines, is_lec):
     # 2.15：节标题规范形态（仅教材批判定；总览/索引类文件无 17 节结构，跳过）
     sec_missing, sec_deformed, sec_heads = ([], [], [])
     if is_lec:
-        sec_missing, sec_deformed, sec_heads = section_form_check(lines)
+        sec_missing, sec_deformed, sec_heads = section_form_check(prose)
     return dict(sections=sec, fences=fences, residual=residual, eight=eight, prompt=prompt,
                 selfref=selfref, back=back, thin=thin, is_batch=is_lec, retro=retro,
                 fence_bad=fence_bad, fence_open=fence_open,
