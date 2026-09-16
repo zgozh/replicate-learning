@@ -1,0 +1,24 @@
+# 散文符号白名单（闸门 ⑥ 散文符号真实性）
+#
+# 用途：正文（代码围栏之外）里出现的符号，本仓源码查不到时默认会被列为「待人工确认」。
+# 本文件把这些符号标注为**合法提及**，避免每次都要人重判一遍。
+#
+# 语法：一行一条；`#` 开头为注释；结尾带 `*` 表示前缀通配。
+# 只影响 ⑥ 的两类判定：
+#   - `Class.method` 形式：写在下面的整串（如 `ConditionEvaluator.shouldSkip`）会被跳过
+#   - 反引号里的 CamelCase 符号：精确名或前缀通配命中即跳过
+#
+# ⚠️ 加白名单前先确认三件事：① 它是外部库类型 / 教学示例类 / 明确的"尚未实现"规划名；
+#    ② 它不是"本该存在但写错了名字"（那属于真错，要改正文，不是加白名单）；
+#    ③ 加的理由写在本文件里（下面的分组注释），否则半年后没人敢删。
+
+# ── 1. 本仓类名与外部库同名，正文此处指的是外部库的那个 ──────────────────
+# Spring 的 org.springframework.context.annotation.ConditionEvaluator（条件裁决器）
+# 与本仓 rag/ingestion/engine/ConditionEvaluator（条件表达式求值器）同名；
+# 讲解 ⑧ 穿透卡讲的是 Spring 那个，求值器的方法名当然不在本仓。
+ConditionEvaluator.shouldSkip
+
+# ── 2. 教学示例类前缀（⑨ No-Framework / 手写版 约定：Tiny*/Mini*/Immutable*）──
+Tiny*
+Mini*
+Immutable*

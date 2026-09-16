@@ -1,0 +1,35 @@
+{
+  "version": "1.0",
+  "entries": [
+    {
+      "id": "V2-01",
+      "stmt": "入口协议必须定义启动、续传、实验、挑战、Issue 和验收路由",
+      "required": ["references/V2执行协议.md", "SKILL.md"]
+    },
+    {
+      "id": "V2-02",
+      "stmt": "三本书必须有固定目录和总索引",
+      "required": ["references/三本书与工程日志.md"]
+    },
+    {
+      "id": "V2-03",
+      "stmt": "核心机制必须支持 Prediction、Evidence、Experiment 和 Correction",
+      "required": ["references/预测卡模板.md", "references/证据卡模板.md", "references/实验卡模板.md"]
+    },
+    {
+      "id": "V2-04",
+      "stmt": "工程任务必须支持 Understand 到 Accept 八步协议",
+      "required": ["references/工程Issue模板.md", "references/上下文包模板.md", "references/Diff审查模板.md", "references/Debug记录模板.md"]
+    },
+    {
+      "id": "V2-05",
+      "stmt": "工程日志必须独立于被学习项目的知识教材",
+      "required": ["references/三本书与工程日志.md"]
+    },
+    {
+      "id": "V2-06",
+      "stmt": "必须保留参考版的源码保真和既有质量闸门",
+      "required": ["scripts/skill_selfcheck.py", "spec/00-质量契约.json"]
+    }
+  ]
+}
