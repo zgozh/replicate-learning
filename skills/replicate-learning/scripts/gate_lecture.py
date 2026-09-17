@@ -1456,7 +1456,23 @@ def prose_index(root):
                 continue
             p = os.path.join(dp, fn)
             files.setdefault(fn, p)
-            t = open(p, encoding="utf-8", errors="replace").read()
+            # 2.24 健壮性加固（非判据变更）：个别环境会瞬时吞文件（OSError Errno 2/9，
+            # deer-flow 实测批次22 闸门 3 跑 2 崩在 open()）。与 load_snapshot 同款修法：
+            # 失败重试一次（读操作幂等）；两次仍失败则保留路径登记（R1/R4 仍可见），
+            # 只跳过正文并显式警告——缩小 src 只可能让 ⑥ 更严（假 FAIL 可复跑），
+            # 不存在"识别不到就放过"的真空通过，也绝不让闸门崩。
+            t = None
+            for _attempt in range(2):
+                try:
+                    t = open(p, encoding="utf-8", errors="replace").read()
+                    break
+                except OSError as _e:
+                    if _attempt == 0:
+                        print("  ⚠️ prose_index 读取失败，重试：%s（%s）" % (p, _e), file=sys.stderr)
+                    else:
+                        print("  ⚠️ prose_index 两次读取失败，跳过该文件正文（路径仍登记）：%s（%s）" % (p, _e), file=sys.stderr)
+            if t is None:
+                continue
             srcs.append(t)
             if fn.endswith(".java"):
                 for m in re.finditer(r"^import\s+(?:static\s+)?([\w.]+);", t, re.M):
