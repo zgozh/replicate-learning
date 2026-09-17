@@ -25,3 +25,6 @@ NOTES/
 .vscode/
 .DS_Store
 Thumbs.db
+
+# 会话素材（不入库）
+聊天记录.txt
