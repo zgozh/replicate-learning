@@ -36,6 +36,7 @@ import sys
 
 FENCE = re.compile(r"^(\s*)(`{3,})\s*([A-Za-z0-9_+-]*)\s*$")
 H3 = re.compile(r"^###\s")
+CJK_RE = re.compile(r"[\u4e00-\u9fff]")   # 2.24：块内 H3 只在含中文时才算「标题被吞进代码块」
 
 
 def fence_seq(lines):
@@ -82,7 +83,8 @@ def scan_fences(lines):
                 inside = False
                 events.append((i, "close", ""))
             continue
-        if inside and H3.match(l):
+        if inside and H3.match(l) and CJK_RE.search(l):
+            # 2.24：与 gate 2.23a 对齐——注入源码里的英文 `### xxx`（FastAPI description 等）是代码不是标题。
             issues.append("H3 `### ` 标题落在代码块内  :%d  %s" % (i, l.strip()[:60]))
     if inside:
         issues.append("D 文件结束时围栏仍未闭合（块从 :%d 开始）" % opened_at)

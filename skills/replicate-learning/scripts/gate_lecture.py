@@ -60,7 +60,12 @@ import tarfile
 import subprocess
 import collections
 
-GATE_VERSION = "2.23"    # 2.23：两处"注入源码里的 markdown 行被当成讲义结构"的误判——（a）块内 H3 只在含中文时报警；
+GATE_VERSION = "2.24"    # 2.24：gate 对 Python 等注释型语言生效（H27 家族收尾）——①④ 内容/行号实检、
+                         #       ② ★文件级覆盖、prose_index 跨语言——py 的 ①④ 此前是
+                         #       "0 个代码块 → PASS" 的真空通过（deer-flow 17 批实测全如此）；
+                         #       ③ 密度对 py/sh 为**报告档**（关键行判定首版近似，语料校准后单独升档）；
+                         #       Java 路径零改动（双隔离：java 走原 by_class/rev 与原函数，py 走全新索引/函数）；
+                         #       （前值）2.23：两处"注入源码里的 markdown 行被当成讲义结构"的误判——（a）块内 H3 只在含中文时报警；
                          #       （b）件段边界只在**正文**里认 `## `（`check_usage` 此前用原始行，与 2.22 修 `_prose_lines` 的根因同族）；
                          #       （前值）2.22：注释标记**按语言取前缀**（`ANNO` / `L_ANNO` 认 `//` `#` `--`）
                          # 2.21：新增**记录类形态判据**（is_record / check_record_shape）——整理批、进行中记录、草稿这类产物
@@ -127,6 +132,157 @@ EXEMPT = re.compile(
     r"|卡[一二三四五六七八九十0-9]|L0-L4|L1-L4|例 \d|Tiny|样例节选)", re.I)
 HIST = re.compile(r"(【历史版本|历史版本示例|历史快照|已被阶段\s*\d+)", re.I)
 CJK_LANGS = {"java", "sql", "yaml", "yml", "xml", "properties", "lua", "st", "json"}
+# ── 2.24：语言能力表与非 Java 实检工具 ───────────────────────────────────
+# 设计：java 走原路径（by_class/rev 原样），非 Java 走本节新索引与新函数——两条路互不可见，
+# Java 批次 stdout 逐字节不变（22 份语料 diff 为空验收）。
+HASH_ANNO_LANGS = {"bash", "sh", "shell", "zsh", "python", "py", "yaml", "yml", "toml",
+                   "conf", "ini", "dockerfile", "dotenv", "makefile", "mk", "make", "ruby", "nginx"}
+DASH_ANNO_LANGS = {"sql", "haskell", "lua"}
+ANNO_LANGS = HASH_ANNO_LANGS | DASH_ANNO_LANGS | {
+    "java", "js", "jsx", "ts", "tsx", "mjs", "go", "rust", "rs", "c", "cpp", "cs", "kotlin", "swift", "php"}
+DATA_LANGS = {"yaml", "yml", "xml", "json", "jsonc", "properties", "ini", "conf", "toml",
+              "dotenv", "dockerfile", "text", "txt", "plaintext", "makefile", "mk", "make"}
+NONKEY_PY = re.compile(r"^\s*(#|$|\)|\]|\}|\{|import\s|from\s|@\w|\.\.\.)")
+NONKEY_SH = re.compile(r"^\s*(#|$|\)|\]|\}|\{|done$|fi$|esac$|then$|do$|else$|;;)")
+
+
+def _anno_parts(line):
+    """返回 (前缀字符, 行号文本, 注释文本) 或 (None, None, None)。"""
+    m = ANNO.search(line)
+    if not m:
+        return None, None, None
+    return line[m.start()], m.group(1), (m.group(2) or "").strip()
+
+
+def strip_anno_lang(line, lang):
+    """按语言剥离行号标注：前缀不匹配该语言 → 视为无标注（防字符串里的 # 被误剥）。
+
+    返回 (剥标后的行, 行号 int 或 None, 教材注释文本或 None)。
+    """
+    pfx, no, note = _anno_parts(line)
+    if pfx is None or no is None:
+        return line, None, None
+    if lang in HASH_ANNO_LANGS and pfx != "#":
+        return line, None, None
+    if lang in DASH_ANNO_LANGS and pfx != "-":
+        return line, None, None
+    if lang not in HASH_ANNO_LANGS and lang not in DASH_ANNO_LANGS and pfx != "/":
+        return line, None, None
+    m = ANNO.search(line)
+    return line[:m.start()].rstrip(), int(no.split("-")[0]), note
+
+
+def has_cjk_lang(line, lang):
+    """该行是否带中文讲解（行号标注后的 ←教材： 文本，或该语言注释里的中文）。"""
+    pfx, _, note = _anno_parts(line)
+    if note and pfx is not None and CJK.search(note):
+        return True
+    code = strip_anno_lang(line, lang)[0]
+    tok = "--" if lang in DASH_ANNO_LANGS else ("#" if lang in HASH_ANNO_LANGS else "//")
+    head = code.split(tok)[0]
+    tail = code[len(head):]
+    return bool(tail) and bool(CJK.search(tail))
+
+
+def mark_text_blocks_lang(bl, lang):
+    """文本块（三引号/多行串）内部行标记——数据不是逻辑，不计入密度。"""
+    if lang not in ("python", "py"):
+        return mark_text_block_lines(bl)
+    inside, state = [], False
+    for ln in bl:
+        code, _, _ = strip_anno_lang(ln, lang)
+        cnt = code.count('"""') + code.count(chr(39) * 3)
+        inside.append(state)
+        if cnt % 2 == 1:
+            state = not state
+    return inside
+
+
+def is_key_lang(code, lang):
+    """非 Java 的关键行判定（首版近似——③ 对 py/sh 因此只做报告档）。"""
+    s = code.strip()
+    if not s:
+        return False
+    if lang in ("python", "py") and NONKEY_PY.match(s):
+        return False
+    if lang in ("bash", "sh", "shell", "zsh") and NONKEY_SH.match(s):
+        return False
+    if lang in ("ts", "tsx", "js", "jsx", "mjs") and s.startswith("//"):
+        return False
+    if s.startswith(("package ", "import ", "export ", "#include", "from ")):
+        return False
+    if PUNCT_ONLY.match(s):
+        return False
+    return True
+
+
+def _len_or0(x):
+    return len(x) if x else 0
+
+
+def _manifest_for(lec):
+    """位置契约清单的三个查找位：讲稿旁 / NOTES/_tools/（deer-flow 约定）/ 讲稿目录。
+    用 basename 匹配，避免中文文件名在跨目录拼接时的形态差异。"""
+    base = os.path.basename(lec) + ".blocks.json"
+    for d in (os.path.dirname(lec),
+              os.path.join(os.path.dirname(lec), "_tools"),
+              os.path.join(lec.split(os.sep + "NOTES" + os.sep)[0] if (os.sep + "NOTES" + os.sep) in lec else os.path.dirname(lec), "NOTES", "_tools")):
+        p = os.path.join(d, base)
+        if os.path.isfile(p):
+            try:
+                return json.load(io.open(p, encoding="utf-8"))
+            except Exception:
+                return None
+    return None
+
+
+def _py_index(root):
+    """非 Java 源码索引：basename → 路径们 + 归一化行 → Counter(文件)（归属回退用）。"""
+    by_base, rev = {}, collections.defaultdict(collections.Counter)
+    for dp, dn, fns in os.walk(root):
+        dn[:] = [d for d in dn if d not in SKIP_DIRS and not d.startswith(".")]
+        for fn in fns:
+            if fn.endswith((".py", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".sh", ".bash",
+                            ".yaml", ".yml", ".toml")):
+                p = os.path.join(dp, fn)
+                by_base.setdefault(fn, []).append(p)
+                try:
+                    t = io.open(p, encoding="utf-8", errors="replace").read()
+                except OSError:
+                    continue
+                for l in t.split("\n"):
+                    n = norm_code(l)
+                    if n and not CMT_LINE.match(n):
+                        rev[n][p] += 1
+    return by_base, rev
+
+
+def _resolve_py_src(sect, chain, hint, by_base, rev_py, code_lines):
+    """从标题/标题链/提示里的反引号文件名归属源文件；歧义时用内容计数器择优；失败 None。"""
+    cands = []
+    for src in [sect or ""] + list(chain or []) + [hint or ""]:
+        cands += re.findall(r"`([^`\n]+\.(?:py|ts|tsx|js|jsx|mjs|sh|bash|yaml|yml|toml))`", src)
+    for c in cands:
+        hits = by_base.get(os.path.basename(c))
+        if not hits:
+            continue
+        if len(hits) == 1:
+            return hits[0]
+        best, bestn = None, -1
+        for h in hits:
+            n = sum(1 for cl in code_lines if cl in src_code_set(h))
+            if n > bestn:
+                best, bestn = h, n
+        return best
+    if code_lines:
+        cnt = collections.Counter()
+        for cl in code_lines:
+            cnt.update(rev_py.get(cl, {}))
+        top = cnt.most_common(2)
+        if top and (len(top) == 1 or top[0][1] > top[1][1]):
+            return top[0][0]
+    return None
+
 SKIP_DIRS = {"target", "node_modules", ".git", ".tmp_audit", ".tmp_lecture", ".workbuddy"}
 SPLIT_DECL = re.compile(r"\b(?:class|interface|enum|record)\s+([A-Z][A-Za-z0-9_]*)")
 SNAP_DECL = re.compile(r"(?:源码依据|源码快照|snapshot)[^\n]{0,40}?([0-9a-f]{7,40})")
@@ -1280,14 +1436,21 @@ def prose_index(root):
     for dp, dn, fns in os.walk(root):
         dn[:] = [d for d in dn if d not in SKIP_DIRS and not d.startswith(".")]
         for fn in fns:
-            if not fn.endswith(".java"):
+            if not fn.endswith((".java", ".py", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".go", ".rs", ".sh", ".bash")):
                 continue
             p = os.path.join(dp, fn)
             files.setdefault(fn, p)
             t = open(p, encoding="utf-8", errors="replace").read()
             srcs.append(t)
-            for m in re.finditer(r"^import\s+(?:static\s+)?([\w.]+);", t, re.M):
-                imported.add(m.group(1).split(".")[-1])
+            if fn.endswith(".java"):
+                for m in re.finditer(r"^import\s+(?:static\s+)?([\w.]+);", t, re.M):
+                    imported.add(m.group(1).split(".")[-1])
+            elif fn.endswith(".py"):
+                for m in re.finditer(r"^\s*(?:import|from)\s+([\w.]+)", t, re.M):
+                    imported.add(m.group(1).split(".")[-1])
+            elif fn.endswith((".ts", ".tsx", ".js", ".jsx", ".mjs")):
+                for m in re.finditer(r"(?:import\s+[^'\"]*from\s*|import\s+)['\"]([^'\"]+)['\"]", t):
+                    imported.add(m.group(1).split("/")[-1])
     _PROSE.update(files=files, imported=imported, src="\n".join(srcs))
     return _PROSE
 
@@ -1522,7 +1685,7 @@ def main():
     if len(sys.argv) < 2:
         print(__doc__)
         return 2
-    lec = sys.argv[1]
+    lec = os.path.abspath(sys.argv[1])   # 2.24：绝对化——_manifest_for 的 NOTES/_tools 回退依赖绝对形态
     root = "."
     verbose = "--verbose" in sys.argv
     explicit_snap = None
@@ -1854,9 +2017,171 @@ def main():
     print(f"   → {'PASS' if not p_bad else 'FAIL'}")
 
     core_bad_n = sum(1 for v in core.values() if v) if (st["is_batch"] and core_strict) else 0
+
+    # ── 2.24：非 Java 语言实检。档位分界 = 有没有位置契约（manifest）：
+    #   manifest 块 → ①位置保真/④行号/②★文件覆盖 全 FAIL 档（位置级，客观可判）；
+    #   无 manifest（归属级近似：标题反引号 + 内容匹配）→ 全部报告档（多源拼块/同名歧义下
+    #   归属会选错——ragent 批次1 的多 profile yaml 拼块实测误报，故只可见不判红）。
+    py_bad = 0
+    _man = _manifest_for(lec)
+    _man_blocks = {}
+    if _man:
+        for _b in _man.get("blocks", []):
+            _i = _b.get("lecture_block_index")
+            if _i is not None:
+                _man_blocks[_i] = _b
+    _pyord = [(i, b) for i, b in enumerate(blocks) if b[1] in ANNO_LANGS and b[1] != "java"]
+    if _pyord or _man_blocks:
+        _pybase, _pyrev = _py_index(ROOT)
+        _s_pos = _s_lnchk = _s_pbad = _s_lnbad = 0          # 强（manifest）
+        _r_pbad = _r_lnbad = _r_unattr = 0                  # 弱（归属，报告档）
+        _cov = collections.defaultdict(set)
+        _lect_norm_all = set()
+        for _i, _b in _pyord:
+            for _x in _b[2]:
+                _c, _, _ = strip_anno_lang(_x, _b[1])
+                _n = norm_code(_c)
+                if _n and not CMT_LINE.match(_n):
+                    _lect_norm_all.add(_n)
+        _lect_ns = [re.sub(r"\s+", "", v) for v in _lect_norm_all]
+        for _i, (_start, _lang, _bl, _sect, _h2, _hint, _chain, _mk) in _pyord:
+            if is_exempt(_sect, _h2, _mk, _bl):
+                continue
+            _code = []
+            for _x in _bl:
+                _c, _, _ = strip_anno_lang(_x, _lang)
+                _n = norm_code(_c)
+                if _n and not CMT_LINE.match(_n):
+                    _code.append(_n)
+            if len(_code) < 5:
+                continue
+            _spec = _man_blocks.get(_i)
+            _src_rel = _spec["src"] if _spec else None
+            if not _src_rel:
+                _hit = _resolve_py_src(_sect, _chain, _hint, _pybase, _pyrev, _code)
+                _src_rel = os.path.relpath(_hit, ROOT) if _hit else None
+            if not _src_rel:
+                _r_unattr += 1
+                continue
+            _sp = os.path.join(ROOT, _src_rel)
+            _sl = src_lines(_sp)
+            _lnidx = collections.defaultdict(list)
+            for _i3, _l3 in enumerate(_sl, 1):
+                _n3 = norm_code(_l3)
+                if _n3:
+                    _lnidx[_n3].append(_i3)
+            for _off, _x in enumerate(_bl):
+                _c, _no, _note = strip_anno_lang(_x, _lang)
+                _n = norm_code(_c)
+                if not _n:
+                    continue
+                if _spec:
+                    _want = int(_spec.get("start", 1)) + _off
+                    _s_pos += 1
+                    if _want > len(_sl) or _n != norm_code(_sl[_want - 1]):
+                        _s_pbad += 1
+                        if _s_pbad <= 3:
+                            print(f"   [FAIL] ①p 位置不符 {_src_rel}:{_want}")
+                            print(f"          讲解 {_n[:70]!r}")
+                            print(f"          源码 {norm_code(_sl[_want - 1])[:70]!r}" if _want <= len(_sl) else "          <越界>")
+                    _cov[_src_rel].add(_want)
+                else:
+                    if not (CMT_LINE.match(_n) and _no is None) and not line_ok_in(_sp, _n):
+                        _r_pbad += 1
+                        if _r_pbad <= 3:
+                            print(f"   [报告] ①p（归属级）内容不符 {_src_rel}  {_n[:60]!r}")
+                if _no is not None:
+                    _s_lnchk += 1
+                    if _spec:
+                        _bad = (not (1 <= _no <= len(_sl))) or norm_code(_sl[_no - 1]) != _n
+                    else:
+                        _where = _lnidx.get(_n, [])
+                        _bad = False if len(_where) != 1 else (_where[0] != _no)
+                    if _bad:
+                        if _spec:
+                            _s_lnbad += 1
+                        else:
+                            _r_lnbad += 1
+                        if _s_lnbad + _r_lnbad <= 6:
+                            print(f"   [{'FAIL' if _spec else '报告'}] ④p 行号漂移 {_src_rel}:L{_no}  {_c[:60]!r}")
+        # ② ★文件覆盖：manifest star_files = FAIL 档（位置级）；归属级整文件块 = 报告档
+        _rev2s = []          # (rel, hit, eff, ratio, strong)
+        for _rel in list(dict.fromkeys(list(((_man or {}).get("star_files") or [])))):
+            _sl = src_lines(os.path.join(ROOT, _rel))
+            _eff = {i for i, _l in enumerate(_sl, 1) if _l.strip() and not _l.strip().startswith("#!")}
+            _hitn = len(_eff & _cov.get(_rel, set()))
+            _rev2s.append((_rel, _hitn, len(_eff), _hitn / len(_eff) if _eff else 1.0, True))
+        for _i, (_start, _lang, _bl, _sect, _h2, _hint, _chain, _mk) in _pyord:
+            if _lang in DATA_LANGS or not block_star(_sect, _chain) or is_exempt(_sect, _h2, _mk, _bl):
+                continue
+            if _i in _man_blocks:
+                continue
+            _code = [norm_code(strip_anno_lang(_x, _lang)[0]) for _x in _bl]
+            _code = [x for x in _code if x and not CMT_LINE.match(x)]
+            if len(_code) < 5:
+                continue
+            _hit = _resolve_py_src(_sect, _chain, _hint, _pybase, _pyrev, _code)
+            if not _hit:
+                continue
+            _rel = os.path.relpath(_hit, ROOT)
+            _sl = src_lines(_hit)
+            if len(_code) < 0.95 * len([x for x in _sl if x.strip()]):
+                continue
+            _real = _hitn = 0
+            for _l in _sl:
+                _t = norm_code(_l)
+                if not _t or CMT_LINE.match(_t) or _t.startswith(("import ", "package ", "from ")) or PUNCT_ONLY.match(_t):
+                    continue
+                _real += 1
+                if _t in _lect_norm_all:
+                    _hitn += 1
+                    continue
+                _ts = re.sub(r"\s+", "", _t)
+                if len(_ts) >= 8 and any(_ts in v for v in _lect_ns):
+                    _hitn += 1
+            _rev2s.append((_rel, _hitn, _real, _hitn / _real if _real else 1.0, False))
+        _p2s = [r for r in _rev2s if r[4] and r[3] < 0.995]
+        _p2r = [r for r in _rev2s if not r[4] and r[3] < 0.995]
+        _den_py = []
+        for _i, (_start, _lang, _bl, _sect, _h2, _hint, _chain, _mk) in _pyord:
+            if _lang in DATA_LANGS or len(_bl) < 5:
+                continue
+            _tb = mark_text_blocks_lang(_bl, _lang)
+            _keys = []
+            for _j, _x in enumerate(_bl):
+                _c, _, _ = strip_anno_lang(_x, _lang)
+                if not is_key_lang(_c, _lang) or (_j < len(_tb) and _tb[_j]):
+                    continue
+                _keys.append(has_cjk_lang(_x, _lang))
+            _kn = len(_keys)
+            if not _kn:
+                continue
+            _mx = _cur = 0
+            for _o in _keys:
+                if _o:
+                    _mx = max(_mx, _cur)
+                    _cur = 0
+                else:
+                    _cur += 1
+            _mx = max(_mx, _cur)
+            _den_py.append((_start, _sect, _kn, sum(1 for o in _keys if o), _mx))
+        print(f"\n[2.24] 非 Java 语言实检：{len(_pyord)} 个块 ｜ manifest：{'有（位置级 FAIL 档）' if _man else '无（归属级报告档）'}")
+        _stag = "manifest 位置级" if _man else "归属级"
+        print(f"   ①p 内容/位置保真：{_s_pos} 处核对（{_stag}）→ 不符 {_s_pbad} 处  {'PASS' if _s_pbad == 0 else 'FAIL'}"
+              f" ｜ 归属级不符 {_r_pbad} 处（报告）｜ 归属不明 {_r_unattr} 块")
+        for _rel, _hitn, _ne, _ra, _st in _rev2s:
+            print(f"   [{'OK ' if _ra >= 0.995 else 'FAIL'}] ②p {_rel:<46} {_hitn:>4}/{_ne:<4} = {_ra*100:.1f}%"
+                  f"{'（manifest）' if _st else '（归属级，报告）'}")
+        print(f"   ②p ★文件覆盖：{len(_rev2s)} 个 → {'PASS' if not _p2s else 'FAIL'}（归属级不足 {_len_or0(_p2r)} 个，报告）")
+        for _s, _sect, _kn, _cm, _mx in sorted(_den_py, key=lambda x: -x[4])[:6]:
+            print(f"   [报告] ③p :{_s:<6} 关键行={_kn:<4} 注释={_cm:<4} 最长无注释={_mx:<3} {_sect[:38]}（报告档，不计 FAIL）")
+        print(f"   ④p 行号一致性：可判定 {_s_lnchk} 处 → 漂移 {_s_lnbad} 处（{_stag}）  {'PASS' if _s_lnbad == 0 else 'FAIL'}"
+              f" ｜ 归属级漂移 {_r_lnbad} 处（报告）")
+        py_bad = _s_pbad + _s_lnbad + len(_p2s)
+
     ok = (not s_reasons and lost == 0 and not unattr and not bad_rev and not bad_den and not sig and not ln_rows
           and not bad_use and not bad_io and not bad_wire and not bad_pos and not bad_ext and not p_bad
-          and not core_bad_n)
+          and not core_bad_n and not py_bad)
 
     print("\n⓪~⑤ 之外的残留引用自查（闸门盲区，SKILL §6.4「⑥ 节之外的残留引用检查」必做清单，需人工过）：")
     print("   ②多步示意（是否漏步/顺序反）｜⑦调用链表（方法名·字段名·两跳顺序）｜⑦边界条件表（行为是否与真实分支一致）")
