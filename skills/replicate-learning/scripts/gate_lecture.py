@@ -340,7 +340,9 @@ def mark_text_block_lines(bl):
             if cnt % 2 == 1:
                 state = False
         else:
-            inside.append(False) if cnt == 0 else inside.append(False)
+            inside.append(False)
+            if cnt % 2 == 1:
+                state = True   # 进入文本块（修复：原实现两分支皆 False，豁免从未生效——批次26 实录）
             if cnt % 2 == 1:
                 state = True
     return inside
@@ -532,10 +534,24 @@ def src_lines(path):
 
 # ── 快照（本批声明的源码 commit） ─────────────────────────────────────────
 def load_snapshot(sha):
-    """把该 commit 的所有 .java 读成一个 tar 与"代码行并集"，用于区分「源码演进」与「编造」"""
+    """把该 commit 的所有 .java 读成一个 tar 与"代码行并集"，用于区分「源码演进」与「编造」。
+    2.24 健壮性加固（非判据变更）：`git archive` 的捕获流在个别环境会被截断（tarfile 报
+    ReadError 'end of file header'，实测 deer-flow 55MB 快照 4/4 复现），而本函数原有
+    「读取失败 → 退回只比当前树」的降级路径却没有兜 tarfile 异常 → 直接崩溃。
+    修法 = ① 失败重试一次（读操作，幂等）② 仍失败则走既有降级（返回 False），绝不让闸门崩。
+    判定层零变化：tar 完整时行为与旧版逐字节一致（Java 23 份语料回归见变更登记）。"""
     global SNAPSHOT, SNAP_TAR, SNAP_UNION
-    data = subprocess.run(["git", "archive", "--format=tar", sha],
-                          cwd=ROOT, capture_output=True).stdout
+    data = b""
+    for _attempt in range(2):                      # 截断多为环境级瞬时问题：重试一次
+        data = subprocess.run(["git", "archive", "--format=tar", sha],
+                              cwd=ROOT, capture_output=True).stdout
+        if data:
+            try:
+                with tarfile.open(fileobj=io.BytesIO(data)) as tf:
+                    tf.getmembers()                # 完整性探测：能列全成员才算拿到快照
+                break
+            except (tarfile.TarError, EOFError, OSError, ValueError):
+                data = b""                         # 截断/损坏 → 当作没拿到，重试或降级
     if not data:
         SNAPSHOT, SNAP_TAR, SNAP_UNION = sha, None, None
         return False
