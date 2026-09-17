@@ -60,7 +60,9 @@ import tarfile
 import subprocess
 import collections
 
-GATE_VERSION = "2.22"    # 2.22：注释标记**按语言取前缀**（`ANNO` / `L_ANNO` 认 `//` `#` `--`）——修"写对了却不认"
+GATE_VERSION = "2.23"    # 2.23：两处"注入源码里的 markdown 行被当成讲义结构"的误判——（a）块内 H3 只在含中文时报警；
+                         #       （b）件段边界只在**正文**里认 `## `（`check_usage` 此前用原始行，与 2.22 修 `_prose_lines` 的根因同族）；
+                         #       （前值）2.22：注释标记**按语言取前缀**（`ANNO` / `L_ANNO` 认 `//` `#` `--`）
                          # 2.21：新增**记录类形态判据**（is_record / check_record_shape）——整理批、进行中记录、草稿这类产物
                          #       **既不该按 17 节判、也不能没人管**：不立判据时它落在
                          #       「教材标志 <3 → 普通文档」的灰区，静默逃过一切形态约束（H23/H25 同族）；
@@ -788,7 +790,9 @@ def fence_scan(lines):
                 else:
                     inside = False
             continue
-        if inside and re.match(r"^### ", l):
+        # 2.23：只对**含中文**的 H3 报警——讲义节标题一律中文，而注入源码里出现的英文
+        # `### xxx`（如 FastAPI description 的 markdown）是源码内容，不是被吞的正文。
+        if inside and re.match(r"^### ", l) and CJK.search(l):
             bad.append(("标题落在代码块内（正文被吞）", i + 1, l.strip()[:36]))
     return bad, inside
 
@@ -1235,6 +1239,7 @@ def check_pedagogy(lines, blocks):
     items_total = items_no_construct = items_no_technique = 0
     for k, i in enumerate(idx):
         end = idx[k + 1] if k + 1 < len(idx) else len(lines)
+        # 2.23：只在**正文行**上认一级节标题（围栏内的 `## ` 是源码，不是节边界）
         stops = [j for j in range(i + 1, end) if lines[j].startswith("## ")]
         if stops:
             end = stops[0]
@@ -1448,9 +1453,28 @@ def core_scope(lines):
     return False, which
 
 
+def _prose_mask(lines):
+    """与 `_prose_lines` 同一套围栏跟踪，但返回**与 lines 对齐的布尔掩码**（2.23）。
+
+    为什么需要：`check_usage` 此前用 `lines[j].startswith("## ")` 找件段边界，
+    于是**围栏内的源码行**（如 FastAPI description 里的 `## DeerFlow API Gateway`）
+    也会被当成一级节标题，把件段提前切断 → 误报「缺【怎么用】/【缺【上下游】」。
+    `_prose_lines`（2.22）已记录过同族根因，这里把同一口径用到件段边界上。
+    """
+    mask, inside = [], False
+    for l in lines:
+        if re.match(r"^\s*`{3,}", l):
+            mask.append(False)
+            inside = not inside
+            continue
+        mask.append(not inside)
+    return mask
+
+
 def check_usage(lines):
     """⑤ 用法与接入：切出每个 6.x 件，检查【怎么用】/【上下游】/（抽象件）【怎么接】与批级扩展小节。"""
     idx = [i for i, l in enumerate(lines) if ITEM_RE.match(l)]
+    prose_mask = _prose_mask(lines)
     items = []
     for k, i in enumerate(idx):
         end = idx[k + 1] if k + 1 < len(idx) else len(lines)
@@ -1459,7 +1483,8 @@ def check_usage(lines):
         # 【怎么接】标记都被算到那个件头上。实测全库：**10 件 iface 误判为真**（该件凭空要多写
         # 【怎么接】）、**6 件 wire 误判为真**（后文有【怎么接】就算它写了）。件段到自己所属一级节
         # 结束为止，这才是"件内"的字面意思。
-        stops = [j for j in range(i + 1, end) if lines[j].startswith("## ")]
+        # 2.23：只在**正文行**上认一级节标题（围栏内的 `## ` 是源码，不是节边界）
+        stops = [j for j in range(i + 1, end) if prose_mask[j] and lines[j].startswith("## ")]
         if stops:
             end = stops[0]
         m = ITEM_RE.match(lines[i])
