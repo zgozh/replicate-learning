@@ -60,7 +60,13 @@ import tarfile
 import subprocess
 import collections
 
-GATE_VERSION = "2.24"    # 2.24：gate 对 Python 等注释型语言生效（H27 家族收尾）——①④ 内容/行号实检、
+GATE_VERSION = "2.25"    # 2.25：⓪d 形态质量检查（Goodhart 防线）——2026-09-18 批次20-38 逐节扫描实测：
+                         #       闸门只机械判定被检查项，写作注意力被检查项吸走，**未检查的 §6.4 必含形态
+                         #       在批次33-38 整体丢失**：② 流水线图 19 批全有→6 批全无、⑤ 穿透清单消失、
+                         #       ⑥ "要解决的一个问题"开场归零、★类逐步回放归零、⑭ 完整答案退化为钩回指针、
+                         #       ⑥ 逐行要点表 36/38 归零（⑤ 位置检查在锚缺失时空过）。⓪d 把这些形态全部
+                         #       变成可判定项；版本门与 ⓪b 同款（声明判据 ≥2.25 → FAIL 档，存量只报告）。
+                         # 2.24：gate 对 Python 等注释型语言生效（H27 家族收尾）——①④ 内容/行号实检、
                          #       ② ★文件级覆盖、prose_index 跨语言——py 的 ①④ 此前是
                          #       "0 个代码块 → PASS" 的真空通过（deer-flow 17 批实测全如此）；
                          #       ③ 密度对 py/sh 为**报告档**（关键行判定首版近似，语料校准后单独升档）；
@@ -1368,6 +1374,119 @@ def check_core_sections(lines, by_class, root):
     return out
 
 
+FORM_FAIL_SINCE = "2.25"      # ⓪d 形态质量 FAIL 档的适用起点（与 ⓪b 的 CORE_FAIL_SINCE 同一套版本门）
+
+
+def form_scope(lines):
+    """2.25：⓪d（② 流水线图 / ⑤ 双清单 / ⑥ 问题开场+要点表+★回放 / ⑭ 完整答案）的适用档位。
+
+    与 core_scope 同口径：批次在 ⑯ 段声明「判据版本 vX.Y」且 X.Y ≥ 2.25 → FAIL 档；
+    未声明或更早 → 报告档（存量 33-38 在回修完成前不被追溯，回修后由 sync_gate_result
+    写入当前版本即自动从严）。新批由 new_batch.py 落笔即写当前版本 → 一律从严。
+    """
+    has_v, which, _ = ver_marker(lines)
+    if has_v and which:
+        try:
+            return float(which) >= float(FORM_FAIL_SINCE), which
+        except ValueError:
+            return False, which
+    return False, which
+
+
+def check_form(lines):
+    """2.25：⓪d 形态质量检查（§6.4 ②⑤⑥⑭ 必含形态的机械判定，Goodhart 防线）。
+
+    返回 dict(fails=[FAIL 原文…], stats=dict(sec2=, sec5_pen=, sec5_skel=, pieces=,
+    no_intro=, no_tbl=, stars=, no_replay=, q=, ans=))。
+    判据均从存量高质量批（ragent 批次21/32）正向提取，校准目标：批次20-32 基本全绿
+    （29/31 的 ⑤、20 的★回放为已知的模板过渡期真实缺口）、33-38 全红。
+    """
+    txt = "\n".join(lines)
+    fails = []
+    stats = dict(sec2=0, sec5_pen=False, sec5_skel=False,
+                 pieces=0, no_intro=0, no_tbl=0, stars=0, no_replay=0, q=0, ans=0)
+
+    # (a) ②：纵向 ASCII 流水线图（§6.4 ②：场景开场 + 流水线图每站标批次 + 分支流预告）
+    s2 = _txt_seg(txt, r"^## ②\s", r"^## ③\s")
+    if s2 is None:
+        fails.append("② 节缺失（§6.4 ②：业务场景与端到端闭环——场景开场 + 流水线图 + 分支流预告）")
+    else:
+        stats["sec2"] = max((sum(1 for l in b.split("\n") if DIAGRAM_ARROW.search(l))
+                             for b in _fenced_blocks(s2)), default=0)
+        if stats["sec2"] < 3:
+            fails.append("② 无业务闭环流水线图（围栏内箭头/连接线最多 %d 行，<3）——§6.4 ② 必含"
+                         "「场景开场 + 纵向 ASCII 流水线图（每站标注来源批次）+ 分支流预告」"
+                         "（批次33-38 实录：该形态整体丢失，只剩密排长段）" % stats["sec2"])
+
+    # (b) ⑤：双清单（穿透清单表 + 讲解骨架清单表）
+    s5 = _txt_seg(txt, r"^## ⑤\s", r"^## ⑥\s")
+    if s5 is None:
+        fails.append("⑤ 节缺失（§6.4 ⑤：批前两个内部清单）")
+    else:
+        rows5 = [l for l in s5.split("\n") if l.strip().startswith("|")]
+        stats["sec5_pen"] = any(("穿透" in l and "证据" in l) for l in rows5)
+        stats["sec5_skel"] = any("业务镜头" in l for l in rows5)
+        if not stats["sec5_pen"]:
+            fails.append("⑤ 缺「外部调用穿透清单」表（表头须含 穿透/证据 两列）——它决定本批哪些点"
+                         "穿透讲、哪些回链已讲批次，缺失 = 回链纪律失守（批次33-38 实录：整表消失）")
+        if not stats["sec5_skel"]:
+            fails.append("⑤ 缺「讲解骨架清单」表（表头须含 业务镜头 列的九列矩阵）——§5：填完骨架才准写正文")
+
+    # (c) ⑥：每件「要解决的一个问题」开场 + 「逐行要点表」锚 + ★类「逐步回放」（件切分与 check_usage 同款）
+    idx = [i for i, l in enumerate(lines) if ITEM_RE.match(l)]
+    mask = _prose_mask(lines)
+    miss_intro, miss_tbl, miss_replay = [], [], []
+    for k, i in enumerate(idx):
+        end = idx[k + 1] if k + 1 < len(idx) else len(lines)
+        stops = [j for j in range(i + 1, end) if mask[j] and lines[j].startswith("## ")]
+        if stops:
+            end = stops[0]
+        m = ITEM_RE.match(lines[i])
+        if re.search(r"历史版本|已被阶段", m.group(3)):
+            continue                                   # 历史版本小节免检（与 ⑤ 用法同口径）
+        stats["pieces"] += 1
+        seg = lines[i:end]
+        body = "\n".join(seg)
+        at = m.group(2)
+        if "要解决的一个问题" not in body:
+            miss_intro.append(at)
+        if not any(TBL_ANCHOR.search(l) for l in seg):
+            miss_tbl.append(at)
+        if "★" in m.group(3):
+            stats["stars"] += 1
+            if "逐步回放" not in body:
+                miss_replay.append(at)
+    stats["no_intro"], stats["no_tbl"], stats["no_replay"] = len(miss_intro), len(miss_tbl), len(miss_replay)
+    if miss_intro:
+        fails.append("⑥ %d/%d 件缺「本文件要解决的一个问题」开场（%s）——§6.4 ⑥ 第 1 层：先给问题与"
+                     "输入/输出再进代码（批次33-38 实录：全部归零，问题被压进【讲解】第一句）"
+                     % (len(miss_intro), stats["pieces"], "、".join(miss_intro[:6])))
+    if miss_tbl:
+        fails.append("⑥ %d/%d 件缺「逐行要点表」（%s）——§6.1.1 三项密度标准第 2 条：要点表讲控制流/"
+                     "数据变化/异常路径，不是重复块内注释（批次36/38 实录：锚整段消失且旧 ⑤ 位置检查空过）"
+                     % (len(miss_tbl), stats["pieces"], "、".join(miss_tbl[:6])))
+    if miss_replay:
+            fails.append("⑥ %d/%d 个★件缺「逐步回放」（%s）——§6.1.1 第 3 条：真实输入 → 每行发生什么 → "
+                         "真实输出，含一条失败路径（读者看不到「代码跑起来是什么样」）"
+                     % (len(miss_replay), stats["stars"], "、".join(miss_replay[:6])))
+
+    # (d) ⑭：完整答案（A：/答：独立成段）且 ≥10 题
+    s14 = _txt_seg(txt, r"^## ⑭\s", r"^## ⑮\s")
+    if s14 is None:
+        fails.append("⑭ 节缺失（§6.4 ⑭：复习问答）")
+    else:
+        stats["q"] = len(re.findall(r"\*\*Q\d+|^\s*\d+[\.、]\s*\*\*", s14, re.M))
+        stats["ans"] = len(re.findall(r"^\s*(?:\*\*答\*\*|答：|A：|A:)", s14, re.M))
+        if stats["q"] < 10:
+            fails.append("⑭ 问答仅 %d 题（<10）——§6.4 ⑭：按本批决策点定 10~15 题，覆盖设计动机/"
+                         "反面假设/跨批关系/故障推演" % stats["q"])
+        if stats["ans"] < stats["q"]:
+            fails.append("⑭ 问答退化：完整答案 %d/%d 题——答案须独立成段（A：/答：先行自答），"
+                         "只留【钩回】指针 = 读者看不到推理过程（批次34-38 实录：答案实体消失）"
+                         % (stats["ans"], stats["q"]))
+    return dict(fails=fails, stats=stats)
+
+
 # ── 检查 ⓪c：教材自足与构造手法（2.18 · **报告档，不计 FAIL**） ──
 # 用户要求 2/4（血证 H26 同轮）：教材必须自足——每段代码/命令前有一句话"这段解决什么"；
 # ⑥ 每件要回答"它是怎么被构造出来的、用了什么手法"。先实测命中率再定是否升 FAIL。
@@ -1886,6 +2005,8 @@ def main():
     # ⓪b 每批必含内容（2.17 · §6.4 ①⑦⑧ 从"通常会有"升为"必含可机械判定"）
     core = dict(sec1=None, chain=None, drill=None)
     core_strict, core_ver = core_scope(lines)
+    form = dict(fails=[], stats=None)
+    form_strict, form_ver = False, None
     if st["is_batch"]:
         core = check_core_sections(lines, by_class, ROOT)
         core_bad = [v for v in core.values() if v]
@@ -1908,6 +2029,29 @@ def main():
             print("   ⑥ 件：缺构造方式（谁 new/注入/生命周期）%d/%d 件 ｜ 缺实现手法（模式/数据结构/算法+权衡）%d/%d 件"
                   % (ped["items_no_construct"], ped["items_total"],
                      ped["items_no_technique"], ped["items_total"]))
+
+        # ⓪d 形态质量（2.25 · §6.4 ②⑤⑥⑭ 必含形态——Goodhart 防线，版本门与 ⓪b 同款）
+        form = check_form(lines)
+        form_strict, form_ver = form_scope(lines)
+        fs = form["stats"]
+        mode = ("FAIL 档（本批声明判据版本 v%s ≥ %s）" % (form_ver, FORM_FAIL_SINCE)) if form_strict \
+            else ("报告档（本批未声明判据版本 ≥ %s，不追溯旧产物；回修后由 sync_gate_result 写入当前版本即从严）" % FORM_FAIL_SINCE)
+        print("\n⓪d 形态质量（v%s · §6.4 ②⑤⑥⑭ · %s）" % (GATE_VERSION, mode))
+        if fs:
+            print("   ②流水线图箭头行=%s ｜ ⑤穿透表=%s 骨架表=%s ｜ ⑥件=%s 问题开场缺=%s 要点表缺=%s ★件=%s 回放缺=%s"
+                  " ｜ ⑭问答 %s题/完整答 %s"
+                  % (fs["sec2"], "有" if fs["sec5_pen"] else "无", "有" if fs["sec5_skel"] else "无",
+                     fs["pieces"], fs["no_intro"], fs["no_tbl"], fs["stars"], fs["no_replay"],
+                     fs["q"], fs["ans"]))
+        else:
+            print("   ②⑤⑥⑭ 形态统计 → 齐（② 图 ｜ ⑤ 双清单 ｜ ⑥ 问题开场+要点表+★回放 ｜ ⑭ 完整答案）")
+        for r in form["fails"]:
+            print(("   [FAIL] " if form_strict else "   [报告] ") + r)
+        if not form["fails"]:
+            print("   → PASS")
+        if not form_strict:
+            print("   ↳ 升 FAIL 档条件：⑯ 写明「判据版本：v%s」（新批由 new_batch.py 自动落笔）；"
+                  "一键补齐：`python scripts/sync_gate_result.py <本文件> --src <仓库根> --apply`" % GATE_VERSION)
 
     # ① 正向
     fid = check_fidelity(blocks, by_class, rev_index)
@@ -2049,6 +2193,7 @@ def main():
     print(f"   → {'PASS' if not p_bad else 'FAIL'}")
 
     core_bad_n = sum(1 for v in core.values() if v) if (st["is_batch"] and core_strict) else 0
+    form_bad_n = len(form["fails"]) if (st["is_batch"] and form_strict) else 0
 
     # ── 2.24：非 Java 语言实检。档位分界 = 有没有位置契约（manifest）：
     #   manifest 块 → ①位置保真/④行号/②★文件覆盖 全 FAIL 档（位置级，客观可判）；
@@ -2213,7 +2358,7 @@ def main():
 
     ok = (not s_reasons and lost == 0 and not unattr and not bad_rev and not bad_den and not sig and not ln_rows
           and not bad_use and not bad_io and not bad_wire and not bad_pos and not bad_ext and not p_bad
-          and not core_bad_n and not py_bad)
+          and not core_bad_n and not py_bad and not form_bad_n)
 
     print("\n⓪~⑤ 之外的残留引用自查（闸门盲区，SKILL §6.4「⑥ 节之外的残留引用检查」必做清单，需人工过）：")
     print("   ②多步示意（是否漏步/顺序反）｜⑦调用链表（方法名·字段名·两跳顺序）｜⑦边界条件表（行为是否与真实分支一致）")
@@ -2236,6 +2381,7 @@ def main():
     if jout:
         json.dump(dict(fidelity=fid, reverse=rev_rows, density=den, lineno=ln_rows,
                        usage=dict(items=u_items, ext=u_ext),
+                       form=dict(fails=form["fails"], stats=form["stats"]),
                        snapshot=sha, ver_marked=(ver_marker(lines)[2]), pass_=ok),
                   open(jout, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
         print("明细已写:", jout)
