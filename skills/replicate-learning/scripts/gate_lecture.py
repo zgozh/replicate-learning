@@ -60,7 +60,17 @@ import tarfile
 import subprocess
 import collections
 
-GATE_VERSION = "2.26"    # 2.26：⓪e 结构密度与排版检查（**第二轮 Goodhart 防线** · 2026-09-18 用户复核批次37）：
+GATE_VERSION = "2.27"    # 2.27：⓪e 增补三项（用户第三轮复核批次37 · ⑥【讲解】段与 ⑫ 第2/3/5 步的排版）：
+                         #       E8 ⑥ 【讲解】段 ≤300 字（且禁止「其一，/其二，」内联枚举——要点应列表化）：
+                         #          批次1-5 = 36-80 字；批次33-38 = 445-958 字（2-5 处超 300）、内联枚举 1-4 处；
+                         #       E9 ⑫ 第 2 条（现状勘察）与第 3 条（方案比较）**各须含 ≥1 个代码块**
+                         #          （"你发给 AI 的原文"提示词，整段可复制）：批次1-5/30/31/33 各有 1 个；
+                         #          批次34-38 ⑫ 内围栏数全为 0（提示词块整体消失）；
+                         #       E10  〤 第 5 条须八段（【任务】【依赖】【要新增的类】【核心约束】【注释要求】
+                         #          【验收标准】【禁止】【输出格式】）**各自独立成行** + 表格 ≥2（投喂策略 / 骨架）：
+                         #          批次1-5 = 8/8 行 + 16 表格行；批次34-38 = 0/8 + 0。
+                         #       三项门 = STYLE2_FAIL_SINCE=2.27（与 E1-E7 的 2.26 分门，不追溯已声明 2.26 的批次）。
+                         # （前值）2.26：⓪e 结构密度与排版检查（**第二轮 Goodhart 防线** · 2026-09-18 用户复核批次37）：
                          #       以批次1/2/3（高水位标尺）量化比对阶段3——⑦ 五小节被「编号链」偷换》
                          #       （批次33-38 只剩 ⑦.1+⑦.5）、⑩ 反例 ❌/✅ 代码对照块归零（31-38）、
                          #       ③ 教学片段「可照抄的最小调用」归零（31-38）、⑫ 缩水 55%（34-38 仅 114-117 行）、
@@ -1500,21 +1510,23 @@ def check_form(lines):
 
 # ── 检查 ⓪e：结构密度与排版（2.26 · **FAIL 档（声明判据 ≥2.26）**） ──────────
 # 判据全部从批次1/2/3（用户钦定高水位）正向提取；校准目标：批次1-19/30 全绿，31/33/34 起按断层红。
-STYLE_FAIL_SINCE = "2.26"     # ⓪e FAIL 档适用起点（版本门与 ⓪b/⓪d 同款；存量不追溯）
+STYLE_FAIL_SINCE = "2.26"     # ⓪e E1-E7 的 FAIL 档适用起点（版本门与 ⓪b/⓪d 同款；存量不追溯）
+STYLE2_FAIL_SINCE = "2.27"    # ⓪e E8-E10（⑥【讲解】排版 / ⑫ 第2·3条提示词块 / 第5条八段分行）的门
 S7_KEYS = ("调用链", "数据流", "状态变化", "不变式")      # ⑦ 五小节的关键词（⑦.1-⑦.4）
 MINSNIP_RE = re.compile(r"可照抄的最小调用|最小可编译实现|教学合成片段")
 
 
 def style_scope(lines):
-    """⑯ 声明的判据版本 ≥ STYLE_FAIL_SINCE → ⓪e 判 FAIL，否则报告档。"""
+    """返回 (strict_e17, strict_e810, ver)：声明版本 ≥2.26 → E1-E7 判 FAIL；≥2.27 → E8-E10 判 FAIL。"""
     vs = re.findall(r"判据\s*v?([\d]+\.[\d]+)", "\n".join(lines))
     if not vs:
-        return False, None
+        return False, False, None
     which = vs[-1]
     try:
-        return float(which) >= float(STYLE_FAIL_SINCE), which
+        f = float(which)
+        return f >= float(STYLE_FAIL_SINCE), f >= float(STYLE2_FAIL_SINCE), which
     except ValueError:
-        return False, which
+        return False, False, which
 
 
 def _seg_paras(seg):
@@ -1564,7 +1576,7 @@ def check_structure_density(txt):
     """
     fails, report = [], []
     st = dict(s7miss="", s12=0, lp2=0, lp4=0, maxpara=0, bare=0, bad10=0, pair10=0,
-              snip=0, s4h4=0)
+              snip=0, s4h4=0, jj_max=0, jj_enum=0, p23="0/0", p5="0/8·0")
     s2 = _txt_seg(txt, r"^## ②\s", r"^## ③\s")
     s4 = _txt_seg(txt, r"^## ④\s", r"^## ⑤\s")
     s7 = _txt_seg(txt, r"^## ⑦\s", r"^## ⑧\s")
@@ -1625,6 +1637,50 @@ def check_structure_density(txt):
             fails.append("⑩ 反例对照块不足（❌=%d / 代码块=%d，须各 ≥3）——批次31-38 实录：❌/✅ 代码对照块"
                          "整体归零、退化成纯文字清单（批次1/2/3=12-14 块、批次30=12 块）"
                          % (st["bad10"], st["pair10"]))
+
+    # ══ E8/E9/E10（2.27 新增 · 门 STYLE2_FAIL_SINCE）══
+    s6_ = _txt_seg(txt, r"^## ⑥\s", r"^## ⑦\s")
+    # E8 ⑥【讲解】段排版
+    if s6_:
+        jj = [l.strip() for l in s6_.split("\n") if "【讲解】" in l]
+        if jj:
+            st["jj_max"] = max(len(x) for x in jj)
+        st["jj_enum"] = len(re.findall(r"其一[，,：:]", s6_))
+        if st["jj_max"] > 300:
+            fails.append("⑥【讲解】段最长 %d 字（>300）——要点挤成一坨（批次33-38 实录 445-958 字；"
+                         "标尺批次1-5 = 36-80 字）：其一/其二/其三应**列表化**、每点独立成段"
+                         % st["jj_max"])
+    # E9 ⑫ 第2·3条提示词块
+    if s12 is not None:
+        idx12 = [m.start() for m in re.finditer(r"^#{3,4}\s*(\d)\.\s", s12, re.M)]
+        def _sub12(k):
+            if k - 1 >= len(idx12):
+                return ""
+            st_ = idx12[k-1]
+            en_ = idx12[k] if k < len(idx12) else len(s12)
+            return s12[st_:en_]
+        n2 = len(re.findall(r"^```", _sub12(2), re.M)) // 2
+        n3 = len(re.findall(r"^```", _sub12(3), re.M)) // 2
+        st["p23"] = "%d/%d" % (n2, n3)
+        if n2 < 1 or n3 < 1:
+            fails.append("⑫ 第 2 条现状勘察 / 第 3 条方案比较缺「你发给 AI 的原文」提示词块"
+                         "（现各 %d/%d 个；批次1-5 各 1 个）——这两步是**用提示词模拟真实开发动作**的环节，"
+                         "没有可复制的原文，读者只能看结论、学不到怎么问" % (n2, n3))
+    # E10 ⑫ 第5条八段分行 + 表格
+    if s12 is not None and len(idx12) >= 5:
+        s5_ = _sub12(5)
+        SEGS = ("任务", "依赖", "要新增的类", "核心约束", "注释要求", "验收标准", "禁止", "输出格式")
+        seg_hit = sum(1 for nm in SEGS
+                      if re.search(r"(?:^【%s】|^%s[：:])" % (re.escape(nm), re.escape(nm)), s5_, re.M))
+        tbl5 = len(re.findall(r"^\|\s*[^|\n]+\|", s5_, re.M))
+        st["p5"] = "%d/8·%d" % (seg_hit, tbl5)
+        if seg_hit < 8 or tbl5 < 8:
+            fails.append("⑫ 第 5 条「可直接使用的提示词」排版不达标（八段独立成行 %d/8、表格行 %d）"
+                         "——八段（任务/依赖/要新增的类/核心约束/注释要求/验收标准/禁止/输出格式）"
+                         "必须**各自独立成行**（段名写 `【任务】` 或 `任务：` 都认），并配「投喂策略」与"
+                         "「可复用骨架」两张表（批次1 的 8/8 + 16 行是标尺；批次34-38 实录 0/8——"
+                         "八段挤在一个【任务书】段里，读者无法按段复用）"
+                         % (seg_hit, tbl5))
 
     # E6 ③ 教学片段（报告档）
     st["snip"] = len(MINSNIP_RE.findall(txt))
@@ -2210,7 +2266,7 @@ def main():
     # ⓪e 结构密度与排版（2.26 · §6.4 ⑦⑫⑩③ 结构 + ②④ 排版 + 围栏标注 · FAIL 档）
     sden = check_structure_density("\n".join(lines))
     sd = sden["stats"]
-    style_strict, style_ver = style_scope(lines)
+    style_strict, style2_strict, style_ver = style_scope(lines)
     mode = ("FAIL 档（本批声明判据版本 v%s ≥ %s）" % (style_ver, STYLE_FAIL_SINCE)) if style_strict \
         else ("报告档（本批未声明判据版本 ≥ %s，不追溯旧产物；回修后由 sync_gate_result 写入当前版本即从严）" % STYLE_FAIL_SINCE)
     print("\n⓪e 结构密度与排版（v%s · §6.4 ⑦⑫⑩③/②④ · %s）" % (GATE_VERSION, mode))
@@ -2218,6 +2274,8 @@ def main():
           " ｜ ③教学片段=%s（报告）｜ ④深潜h4=%s（报告）"
           % (sd["s7miss"] or "无", sd["s12"], sd["lp2"], sd["lp4"], sd["maxpara"],
              sd["bare"], sd["bad10"], sd["pair10"], sd["snip"], sd["s4h4"]))
+    print("   ⑥【讲解】最长段=%s 字（内联枚举 %s）｜ ⑫第2·3条提示词块=%s ｜ ⑫第5条八段=%s"
+          % (sd["jj_max"], sd["jj_enum"], sd["p23"], sd["p5"]))
     for r in sden["fails"]:
         print(("   [FAIL] " if style_strict else "   [报告] ") + r)
     for r in sden["report"]:
@@ -2369,7 +2427,12 @@ def main():
 
     core_bad_n = sum(1 for v in core.values() if v) if (st["is_batch"] and core_strict) else 0
     form_bad_n = len(form["fails"]) if (st["is_batch"] and form_strict) else 0
-    style_bad_n = len(sden["fails"]) if (st["is_batch"] and style_strict) else 0
+    style_bad_n = 0
+    if st["is_batch"]:
+        for r in sden["fails"]:
+            is_e2 = r.startswith(("⑥【讲解】", "⑫ 第 2 条", "⑫ 第 5 条"))
+            if (is_e2 and style2_strict) or ((not is_e2) and style_strict):
+                style_bad_n += 1
 
     # ── 2.24：非 Java 语言实检。档位分界 = 有没有位置契约（manifest）：
     #   manifest 块 → ①位置保真/④行号/②★文件覆盖 全 FAIL 档（位置级，客观可判）；
