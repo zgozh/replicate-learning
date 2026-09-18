@@ -60,7 +60,18 @@ import tarfile
 import subprocess
 import collections
 
-GATE_VERSION = "2.25"    # 2.25：⓪d 形态质量检查（Goodhart 防线）——2026-09-18 批次20-38 逐节扫描实测：
+GATE_VERSION = "2.26"    # 2.26：⓪e 结构密度与排版检查（**第二轮 Goodhart 防线** · 2026-09-18 用户复核批次37）：
+                         #       以批次1/2/3（高水位标尺）量化比对阶段3——⑦ 五小节被「编号链」偷换》
+                         #       （批次33-38 只剩 ⑦.1+⑦.5）、⑩ 反例 ❌/✅ 代码对照块归零（31-38）、
+                         #       ③ 教学片段「可照抄的最小调用」归零（31-38）、⑫ 缩水 55%（34-38 仅 114-117 行）、
+                         #       ②④ 超长段密排（33-38 超 300 字 1-4 段，最长 743）、① ② 图裸围栏无着色
+                         #       （33-38 的 ① ② 全是裸围栏）。**断层批：⑩/③→31、⑦→33、⑫→34**；
+                         #       批次30 为反证（同阶段同注入管线，⑦/⑩/③ 全保持）→ 退化非必然，
+                         #       是模板在这三处失守而闸门恰好只查 ⑦.5（所以它独活）。
+                         #       ⓪e = E1 ⑦五小节 / E2 ⑫行数≥180 / E3 ②④单段≤300字 / E4 ①②⑦围栏必标语言 /
+                         #       E5 ⑩❌对照块≥3 对（以上 FAIL 档，门=STYLE_FAIL_SINCE）+ E6 ③教学片段≥3 /
+                         #       E7 ④深潜小标题≥2（报告档）。
+                         # （前值）2.25：⓪d 形态质量检查（Goodhart 防线）——2026-09-18 批次20-38 逐节扫描实测：
                          #       闸门只机械判定被检查项，写作注意力被检查项吸走，**未检查的 §6.4 必含形态
                          #       在批次33-38 整体丢失**：② 流水线图 19 批全有→6 批全无、⑤ 穿透清单消失、
                          #       ⑥ "要解决的一个问题"开场归零、★类逐步回放归零、⑭ 完整答案退化为钩回指针、
@@ -1487,6 +1498,149 @@ def check_form(lines):
     return dict(fails=fails, stats=stats)
 
 
+# ── 检查 ⓪e：结构密度与排版（2.26 · **FAIL 档（声明判据 ≥2.26）**） ──────────
+# 判据全部从批次1/2/3（用户钦定高水位）正向提取；校准目标：批次1-19/30 全绿，31/33/34 起按断层红。
+STYLE_FAIL_SINCE = "2.26"     # ⓪e FAIL 档适用起点（版本门与 ⓪b/⓪d 同款；存量不追溯）
+S7_KEYS = ("调用链", "数据流", "状态变化", "不变式")      # ⑦ 五小节的关键词（⑦.1-⑦.4）
+MINSNIP_RE = re.compile(r"可照抄的最小调用|最小可编译实现|教学合成片段")
+
+
+def style_scope(lines):
+    """⑯ 声明的判据版本 ≥ STYLE_FAIL_SINCE → ⓪e 判 FAIL，否则报告档。"""
+    vs = re.findall(r"判据\s*v?([\d]+\.[\d]+)", "\n".join(lines))
+    if not vs:
+        return False, None
+    which = vs[-1]
+    try:
+        return float(which) >= float(STYLE_FAIL_SINCE), which
+    except ValueError:
+        return False, which
+
+
+def _seg_paras(seg):
+    """剥围栏/表格/列表/标题/引用后按空行切段，返回段落字符长度列表（>20 字才计）。"""
+    b = re.sub(r"```.*?```", "", seg or "", flags=re.S)
+    out, cur = [], []
+    for l in b.split("\n"):
+        s = l.strip()
+        if (not s) or s.startswith("|") or s.startswith("- ") or s.startswith("* ") \
+           or s.startswith("#") or s.startswith(">") or re.match(r"^\d+[.、)]\s", s):
+            if cur:
+                out.append("".join(cur))
+                cur = []
+            continue
+        cur.append(s)
+    if cur:
+        out.append("".join(cur))
+    return [len(p) for p in out if len(p) > 20]
+
+
+def _bare_fences(seg):
+    """状态机统计"开围栏无语言标注"的处数（闭合围栏不计）。"""
+    n, inside = 0, False
+    for l in (seg or "").split("\n"):
+        m = re.match(r"^```(\S*)", l)
+        if not m:
+            continue
+        if not inside:
+            inside = True
+            if not m.group(1):
+                n += 1
+        else:
+            inside = False
+    return n
+
+
+def check_structure_density(txt):
+    """⓪e：返回 dict(fails=[], report=[], stats=dict(...))。
+
+    E1 ⑦ 五小节齐全（调用链/数据流/状态变化/不变式）——批次33-38 被「编号链」偷换只剩 ⑦.1+⑦.5
+    E2 ⑫ 行数 ≥180——34-38 仅 114-117（缩水 55%）
+    E3 ②④ 单段 ≤300 字——33-38 超 300 字 1-4 段（密排"一大段堆在一起"）
+    E4 ①/②/⑦ 内开围栏必须标语言（text/java/…）——33-38 的 ① ② 全裸围栏（渲染无着色）
+    E5 ⑩ 反例 ❌ 代码对照块 ≥3 对——31-38 全 0（退化成纯文字清单）
+    E6 ③ 教学片段 ≥3 处（全文"可照抄的最小调用"）——报告档
+    E7 ④ 深潜小标题 ≥2 个（h4）——报告档
+    """
+    fails, report = [], []
+    st = dict(s7miss="", s12=0, lp2=0, lp4=0, maxpara=0, bare=0, bad10=0, pair10=0,
+              snip=0, s4h4=0)
+    s2 = _txt_seg(txt, r"^## ②\s", r"^## ③\s")
+    s4 = _txt_seg(txt, r"^## ④\s", r"^## ⑤\s")
+    s7 = _txt_seg(txt, r"^## ⑦\s", r"^## ⑧\s")
+    s10 = _txt_seg(txt, r"^## ⑩\s", r"^## ⑪\s")
+    s12 = _txt_seg(txt, r"^## ⑫\s", r"^## ⑬\s")
+
+    # E1 ⑦ 五小节
+    if s7 is None:
+        fails.append("⑦ 节缺失（§6.4 ⑦：调用链、数据流、状态变化与边界）")
+    else:
+        subs = " ".join(re.findall(r"^#{3,4}\s*(.{0,60})", s7, re.M))
+        miss = [k for k in S7_KEYS if k not in subs]
+        st["s7miss"] = "、".join(miss)
+        if miss:
+            fails.append("⑦ 五小节不齐：缺 %s（小节标题须含该四关键词；批次33-38 实录：标题被改成"
+                         "「编号链」且 ⑦.2/⑦.3/⑦.4 整体消失——⑦.5 独活是因为闸门恰好只查它）" % st["s7miss"])
+        # E4 ⑦ 内的图示围栏必须标语言
+        nb7 = _bare_fences(s7)
+        st["bare"] += nb7
+        if nb7:
+            fails.append("⑦ 有 %d 处裸围栏（图示须标 ```text——裸围栏渲染无底色，读者看到的是白板）" % nb7)
+
+    # E2 ⑫ 厚度
+    if s12 is not None:
+        st["s12"] = len(s12.split("\n"))
+        if st["s12"] < 180:
+            fails.append("⑫ 仅 %d 行（<180）——批次34-38 实录：八条标题在、内容薄（每条 6-23 行 vs 标尺"
+                         " 19-51 行），Vibecoding 视角退化成提纲" % st["s12"])
+
+    # E3 ②④ 段落长度
+    for tag, seg in (("②", s2), ("④", s4)):
+        lens = _seg_paras(seg)
+        bad = [x for x in lens if x > 300]
+        if lens:
+            st["maxpara"] = max(st["maxpara"], max(lens))
+        if bad:
+            if tag == "②":
+                st["lp2"] = len(bad)
+            else:
+                st["lp4"] = len(bad)
+            fails.append("%s 有 %d 段超 300 字（最长 %d）——§6.1.3 排版硬标准：单段 ≤300 字，超了断段；"
+                         "批次1/2/3 实测 0 段超标（最长 239）" % (tag, len(bad), max(lens)))
+
+    # E4 ①/② 围栏语言
+    for tag, seg in (("①", _txt_seg(txt, r"^## ①\s", r"^## ②\s")), ("②", s2)):
+        nb = _bare_fences(seg)
+        st["bare"] += nb
+        if nb:
+            fails.append("%s 有 %d 处裸围栏（图示须标 ```text——渲染无底色即用户可见的「代码块没颜色」）" % (tag, nb))
+
+    # E5 ⑩ 反例对照块
+    if s10 is None:
+        fails.append("⑩ 节缺失（§6.4 ⑩：失败反例 ❌ 错法 + ✅ 修法）")
+    else:
+        st["bad10"] = s10.count("❌")
+        st["pair10"] = len(re.findall(r"^```", s10, re.M)) // 2
+        if st["bad10"] < 3 or st["pair10"] < 3:
+            fails.append("⑩ 反例对照块不足（❌=%d / 代码块=%d，须各 ≥3）——批次31-38 实录：❌/✅ 代码对照块"
+                         "整体归零、退化成纯文字清单（批次1/2/3=12-14 块、批次30=12 块）"
+                         % (st["bad10"], st["pair10"]))
+
+    # E6 ③ 教学片段（报告档）
+    st["snip"] = len(MINSNIP_RE.findall(txt))
+    if st["snip"] < 3:
+        report.append("③ 教学片段「可照抄的最小调用」仅 %d 处（<3）——批次31-38 实录：教学片段整体消失"
+                      "（批次1/2/3=9-14 处、批次30=17 处）" % st["snip"])
+
+    # E7 ④ 深潜小标题（报告档）
+    if s4 is not None:
+        st["s4h4"] = len(re.findall(r"^####\s", s4, re.M))
+        if st["s4h4"] < 2:
+            report.append("④ 深潜无小节标题（h4=%d，须 ≥2）——批次1/2/3 为 4.1/4.2 带标题深潜；"
+                          "批次20-38 实录：深潜压成密排长段（33-38 有 3 段超 300 字）" % st["s4h4"])
+    return dict(fails=fails, report=report, stats=st)
+
+
 # ── 检查 ⓪c：教材自足与构造手法（2.18 · **报告档，不计 FAIL**） ──
 # 用户要求 2/4（血证 H26 同轮）：教材必须自足——每段代码/命令前有一句话"这段解决什么"；
 # ⑥ 每件要回答"它是怎么被构造出来的、用了什么手法"。先实测命中率再定是否升 FAIL。
@@ -2053,6 +2207,27 @@ def main():
             print("   ↳ 升 FAIL 档条件：⑯ 写明「判据版本：v%s」（新批由 new_batch.py 自动落笔）；"
                   "一键补齐：`python scripts/sync_gate_result.py <本文件> --src <仓库根> --apply`" % GATE_VERSION)
 
+    # ⓪e 结构密度与排版（2.26 · §6.4 ⑦⑫⑩③ 结构 + ②④ 排版 + 围栏标注 · FAIL 档）
+    sden = check_structure_density("\n".join(lines))
+    sd = sden["stats"]
+    style_strict, style_ver = style_scope(lines)
+    mode = ("FAIL 档（本批声明判据版本 v%s ≥ %s）" % (style_ver, STYLE_FAIL_SINCE)) if style_strict \
+        else ("报告档（本批未声明判据版本 ≥ %s，不追溯旧产物；回修后由 sync_gate_result 写入当前版本即从严）" % STYLE_FAIL_SINCE)
+    print("\n⓪e 结构密度与排版（v%s · §6.4 ⑦⑫⑩③/②④ · %s）" % (GATE_VERSION, mode))
+    print("   ⑦缺小节=%s ｜ ⑫行数=%s ｜ ②④超长段=%s/%s（最长 %s）｜ ①②⑦裸围栏=%s ｜ ⑩❌=%s 块=%s"
+          " ｜ ③教学片段=%s（报告）｜ ④深潜h4=%s（报告）"
+          % (sd["s7miss"] or "无", sd["s12"], sd["lp2"], sd["lp4"], sd["maxpara"],
+             sd["bare"], sd["bad10"], sd["pair10"], sd["snip"], sd["s4h4"]))
+    for r in sden["fails"]:
+        print(("   [FAIL] " if style_strict else "   [报告] ") + r)
+    for r in sden["report"]:
+        print("   [报告] " + r)
+    if not sden["fails"]:
+        print("   → PASS")
+    if not style_strict:
+        print("   ↳ 升 FAIL 档条件：⑯ 写明「判据版本：v%s」；一键补齐："
+              "`python scripts/sync_gate_result.py <本文件> --src <仓库根> --apply`" % GATE_VERSION)
+
     # ① 正向
     fid = check_fidelity(blocks, by_class, rev_index)
     chk = [r for r in fid if not r["exempt"]]
@@ -2194,6 +2369,7 @@ def main():
 
     core_bad_n = sum(1 for v in core.values() if v) if (st["is_batch"] and core_strict) else 0
     form_bad_n = len(form["fails"]) if (st["is_batch"] and form_strict) else 0
+    style_bad_n = len(sden["fails"]) if (st["is_batch"] and style_strict) else 0
 
     # ── 2.24：非 Java 语言实检。档位分界 = 有没有位置契约（manifest）：
     #   manifest 块 → ①位置保真/④行号/②★文件覆盖 全 FAIL 档（位置级，客观可判）；
@@ -2358,7 +2534,7 @@ def main():
 
     ok = (not s_reasons and lost == 0 and not unattr and not bad_rev and not bad_den and not sig and not ln_rows
           and not bad_use and not bad_io and not bad_wire and not bad_pos and not bad_ext and not p_bad
-          and not core_bad_n and not py_bad and not form_bad_n)
+          and not core_bad_n and not py_bad and not form_bad_n and not style_bad_n)
 
     print("\n⓪~⑤ 之外的残留引用自查（闸门盲区，SKILL §6.4「⑥ 节之外的残留引用检查」必做清单，需人工过）：")
     print("   ②多步示意（是否漏步/顺序反）｜⑦调用链表（方法名·字段名·两跳顺序）｜⑦边界条件表（行为是否与真实分支一致）")
@@ -2382,6 +2558,7 @@ def main():
         json.dump(dict(fidelity=fid, reverse=rev_rows, density=den, lineno=ln_rows,
                        usage=dict(items=u_items, ext=u_ext),
                        form=dict(fails=form["fails"], stats=form["stats"]),
+                       struct=dict(fails=sden["fails"], report=sden["report"], stats=sden["stats"]),
                        snapshot=sha, ver_marked=(ver_marker(lines)[2]), pass_=ok),
                   open(jout, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
         print("明细已写:", jout)
