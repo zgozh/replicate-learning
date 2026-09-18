@@ -24,6 +24,33 @@ from safe_edit import load, save, insert_at, safe_replace_range, scan_fences  # 
 
 HEAD = '**七组闸门实测**'
 MARK_RE = re.compile(r'^\*\*七组闸门实测')
+NOTE_RE = re.compile(r'^>\s*本表由\s*`scripts/sync_gate_result\.py`')
+VERLINE_RE = re.compile(r'^\*\*判据版本：v?[\d.]+\*\*')
+
+
+def block_end(lines, old):
+    """实测块的**真末行**（2.29 修 BUG-S1）。
+
+    旧实现只走一步：`while 下一行非空且不以 ##/###/| 开头` —— 而 HEAD 行的下一行恒为空行，
+    循环立即退出 → 实际只替换了 HEAD 那一行，于是**每跑一次就多堆一张旧表**（实测 11 批受害，
+    批次37 堆到 11 张、批次33 3 张；同一份 ⑯ 里并存 v2.24/v2.25/v2.28 三套互相矛盾的数字，
+    正好违背本工具的存在理由「杜绝复述旧结论」）。
+    新口径：从 HEAD 行起连续吃掉「表格行 / 说明引用行 / 它们之间的空行」，遇到别的标题或正文行即止。
+    """
+    j, last = old + 1, old
+    while j < len(lines):
+        s = lines[j].strip()
+        if not s:
+            j += 1
+            continue
+        if s.startswith('## ') or s.startswith('### '):
+            break
+        if s.startswith('|') or NOTE_RE.match(s):
+            last = j
+            j += 1
+            continue
+        break
+    return last
 
 
 def run_gate(lecture, src):
@@ -104,12 +131,19 @@ def main():
         print('（dry-run，未写盘；确认后加 --apply）')
         return 0
     if old is not None:
-        end = old
-        while end + 1 < len(lines) and lines[end + 1].strip() and not lines[end + 1].startswith(('## ', '### ', '|')):
-            end += 1
+        end = block_end(lines, old)
+        print('   ↳ 实测块 :%d-:%d（%d 行，含历史堆叠表）' % (old + 1, end + 1, end - old + 1))
         safe_replace_range(lines, old + 1, end + 1, block)
     else:
         insert_at(lines, i16 + 2, block)
+    # 顺手刷新 ⑯ 末端那条「判据版本：vX.Y」手写行（历史上会与被刷新的机器表打架）
+    for k in range(old + 1 if old is not None else i16 + 1, len(lines)):
+        if lines[k].startswith('## '):
+            break
+        if VERLINE_RE.match(lines[k].strip()):
+            lines[k] = VERLINE_RE.sub('**判据版本：v%s**' % r['ver'], lines[k].strip(), count=1)
+            print('   ↳ 判据版本行 :%d 已刷为 v%s' % (k + 1, r['ver']))
+            break
     after = scan_fences(lines)
     if after[0]:
         raise SystemExit('[ABORT] 围栏配对异常：%s' % (after[0][:3],))

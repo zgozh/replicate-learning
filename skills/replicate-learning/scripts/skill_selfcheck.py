@@ -896,6 +896,48 @@ def check_lecture_class_sc(r):
         r.fail('教材判定：批头的【历史版本示例】把批次误判成参照物（%s）' % why5)
 
 
+def check_sync_idempotent(r):
+    """⑳ `sync_gate_result.py` 实测块替换的幂等性（2.29 / BUG-S1）。
+
+    血证（2026-09-18 实测）：旧 `end` 只走一步——HEAD 行下一行恒是空行，循环立即退出，
+    于是**只替换了 HEAD 那一行**，旧表格与旧说明全部留下 → 每跑一次多堆一张表。
+    受害 11 批：批次37 堆到 11 张、批次33/1 各 3 张、批次9/10/34/35/36/38 各 2 张；
+    同一份 ⑯ 里并存 v2.24 / v2.25 / v2.28 三套互相矛盾的数字——正好违背本工具的存在理由。
+    本检查用一段**含两张叠表**的样本钉死：block_end 必须吃到最后一张表的说明行，且连做两次替换后
+    HEAD 只剩 1 个。
+    """
+    sys.path.insert(0, HERE)
+    import sync_gate_result as S      # noqa: E402
+    NOTE = ('> 本表由 `scripts/sync_gate_result.py` 从闸门实跑输出生成，'
+            '**不是复述旧结论**（血证 H15）；判据版本以本表首行的 v%s 为准。')
+    blocks = ['| # | 闸门组 | 实测值 | 结论 |', '|---|---|---|---|', '| ⓪ | 结构 | 旧 | 通过 |']
+    lines = ['## ⑯ 教材质量自检',
+             '**七组闸门实测**（判据 v2.24，`gate_lecture.py` 单条命令退出码 0）**：', '']
+    lines += blocks + ['', NOTE % '2.24', '']
+    lines += blocks + ['', NOTE % '2.21', '']
+    lines += ['**判据版本：v2.21**（本批按此版判据验收）', '', '## 索引节']
+    end = S.block_end(lines, 1)
+    if end != 13:
+        r.fail('⑳ block_end 未吃掉历史叠表：返回 %d（应为 13 = 第二张表的说明行）——'
+               '旧实现只吃到 HEAD 行 → 每跑一次多堆一张表（批次37 堆到 11 张）' % end)
+        return
+    r.ok('⑳ block_end 吃满历史叠表（HEAD + 2 张表 + 2 条说明 → 末行 :14）')
+    new = '**七组闸门实测**（判据 v2.99，`gate_lecture.py` 单条命令退出码 0）**：\n\n' \
+          + '\n'.join(blocks) + '\n\n' + NOTE % '2.99' + '\n'
+    for _ in range(2):
+        i = next((k for k, l in enumerate(lines) if S.MARK_RE.match(l)), None)
+        if i is None:
+            r.fail('⑳ 幂等自测中找不到 HEAD 行（替换把标题吃掉了）')
+            return
+        S.safe_replace_range(lines, i + 1, S.block_end(lines, i) + 1, new)
+    heads = sum(1 for l in lines if S.MARK_RE.match(l))
+    stale = sum(1 for l in lines if S.NOTE_RE.match(l.strip()))
+    if heads == 1 and stale == 1:
+        r.ok('⑳ 连做两次替换后 HEAD=1 / 说明行=1（幂等成立，不再堆表）')
+    else:
+        r.fail('⑳ 幂等失败：HEAD=%d / 说明行=%d（都应为 1）——旧表会一直堆下去' % (heads, stale))
+
+
 def check_record_shape_sc(r):
     """⑲ 记录类形态自测（2.21）：整理批 / 进行中记录既不按 17 节判，也不能没人管。"""
     sys.path.insert(0, HERE)
@@ -981,6 +1023,8 @@ def main():
     check_lecture_class_sc(r)
     print('\n⑲ 记录类形态自测（2.21）：整理批/进行中记录也要自证状态')
     check_record_shape_sc(r)
+    print('\n⑳ sync_gate_result 实测块替换幂等（2.29 / BUG-S1）：不许每跑一次堆一张旧表')
+    check_sync_idempotent(r)
     print('\n' + '=' * 88)
     print('检查项 %d，失败 %d → %s' % (r.n, r.bad, 'PASS ✅' if r.bad == 0 else 'FAIL ❌'))
     print('=' * 88)
