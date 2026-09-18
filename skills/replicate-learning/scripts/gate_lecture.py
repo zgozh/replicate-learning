@@ -60,7 +60,7 @@ import tarfile
 import subprocess
 import collections
 
-GATE_VERSION = "2.28"    # 2.28：⓪e 增补 E11（用户第四轮要求 · ⑫ 提示词块化与多轮）：
+GATE_VERSION = "2.29"    # 2.29：⓪f 批次3 结构基准门（五项：⑫.5 fenced / ⑦.1 fenced / ④ 五段式 / ② 段落≤8 / ⑥ 边界与副作用+上下游表格）    # 2.28：⓪e 增补 E11（用户第四轮要求 · ⑫ 提示词块化与多轮）：
                          #       ⑫ 里所有"发给 AI 的提示词"必须放进 ```text 代码块（观感 + 可复制），
                          #       且**第 5 条须分多轮**（≥2 块）——现实开发是多轮问答（轮1 勘察禁写码 →
                          #       轮2 只出骨架 → 轮3 实现+自检），每轮一块并标轮次目标/期望形态/偏差信号。
@@ -1519,6 +1519,7 @@ def check_form(lines):
 STYLE_FAIL_SINCE = "2.26"     # ⓪e E1-E7 的 FAIL 档适用起点（版本门与 ⓪b/⓪d 同款；存量不追溯）
 STYLE2_FAIL_SINCE = "2.27"    # ⓪e E8-E10（⑥【讲解】排版 / ⑫ 第2·3条提示词块 / 第5条八段分行）的门
 STYLE3_FAIL_SINCE = "2.28"    # ⓪e E11（⑫ 第5条提示词块化与多轮）的门
+STYLE4_FAIL_SINCE = "2.29"    # ⓪f 批次3 结构基准门（五项结构硬规则，SKILL §6.1.3 第 9~13 条）的门
 S7_KEYS = ("调用链", "数据流", "状态变化", "不变式")      # ⑦ 五小节的关键词（⑦.1-⑦.4）
 MINSNIP_RE = re.compile(r"可照抄的最小调用|最小可编译实现|教学合成片段")
 
@@ -1722,6 +1723,97 @@ INTRO_CJK = re.compile(r"[一-鿿]")          # 行内含中文字符
 CONSTRUCT_RE = re.compile(
     r"new\s|注入|构造|@Autowired|@Bean|装配|注册|生命周期|单例|工厂|实例化|创建时机|何时创建|谁来创建")
 TECHNIQUE_RE = re.compile(r"模式|数据结构|算法|权衡|取舍|套路|手法|为什么这样设计|设计选择")
+
+
+def check_batch3_structure(txt):
+    """⓪f：批次3 结构基准五项（2.29 新增）。返回 dict(fails=[], report=[], stats=dict(...))。
+
+    判据 = SKILL §6.1.3 第 9~13 条（用户钦定 ragent 阶段1批次3 为结构基准；血证 = b38 五处结构差）。
+    """
+    fails, report, st = [], [], dict(f_taskbook=None, f71=None, f4="", five=0, p2=99,
+                                     fzl=0, up_tab=0, items=0)
+    lines = txt.split("\n")
+
+    def sec(a, b):
+        m = re.search(a, txt, re.M)
+        if not m:
+            return None
+        m2 = re.search(b, txt[m.end():], re.M)
+        return txt[m.end(): m.end() + (m2.start() if m2 else len(txt) - m.end())]
+
+    # F1 ⑫.5 八段任务书 fenced（首个【任务】/任务：行须已在围栏内）
+    s5 = sec(r"^#{3,4} 5\. 可直接使用的提示词", r"^#{3,4} 6\. ")
+    if s5:
+        idx = None
+        depth = 0
+        for i, l in enumerate(s5.split("\n")):
+            fm = re.match(r"^```(\S*)", l)
+            if fm:
+                depth = depth + 1 if not depth else 0
+            if re.match(r"^(【任务】|任务：)", l) and idx is None:
+                idx = i
+                st["f_taskbook"] = (depth == 1)
+        if st["f_taskbook"] is False:
+            fails.append("⑫ 第 5 条八段任务书未 fenced ` ```text `（段名在行首 ≠ 各自成段——b38 事故：无空行渲染成巨块）；"
+                         "等价形态 = 多轮递进块（提示词全 fenced + 八段骨架表）")
+    else:
+        fails.append("⑫ 第 5 条小节缺失（可直接使用的提示词）")
+
+    # F2 ⑦.1 fenced
+    s71 = sec(r"^#### ⑦\.1 调用链", r"^#### ⑦\.2")
+    if s71 is None:
+        fails.append("⑦.1 调用链小节缺失")
+    else:
+        st["f71"] = ("```text" in s71) and not re.search(r"^\d+\.\s*→", s71, re.M)
+        if not st["f71"]:
+            fails.append("⑦.1 调用链未 fenced ` ```text `（b38 事故：markdown 编号列表渲染无底色、行宽参差）；"
+                         "链尾应有「怎么读懂这条链」段")
+
+    # F3 ④ 标题 + 五段式标注
+    s4 = sec(r"^## ④ ", r"^## ⑤ ")
+    if s4 is None:
+        fails.append("④ 节缺失")
+    else:
+        h4 = re.search(r"^## ④ (.+)$", s4, re.M)
+        if h4 and "新概念白话解释" not in h4.group(1):
+            fails.append("④ 标题应为「新概念白话解释」（现：%s）——概念表 + 五段式深潜，不是密排长段" % h4.group(1).strip())
+        st["five"] = sum(1 for k in ("**是什么**", "**解决什么问题**", "**不用它会怎样**", "**代价**")
+                         if k in s4)
+        n4 = len(re.findall(r"^####\s*4\.\d", s4, re.M))
+        if st["five"] < 4 or n4 < 2:
+            fails.append("④ 深潜五段式标注不足（是什么/解决什么问题/不用它会怎样/代价 命中 %d/4，#### 4.x = %d 个）"
+                         "——五段：是什么 / 解决什么问题 / 不用它会怎样 / 本批的具体用法 / 代价" % (st["five"], n4))
+
+    # F4 ② 段落数 ≤8 + 分支流预告
+    s2 = sec(r"^## ② ", r"^## ③ ")
+    if s2 is None:
+        fails.append("② 节缺失")
+    else:
+        plain = [p for p in re.split(r"\n\s*\n", s2)
+                 if len(p.strip()) > 20 and not p.strip().startswith(("|", "```", "-", "#"))]
+        st["p2"] = len(plain)
+        if len(plain) > 8:
+            fails.append("② 散文段落 %d > 8（b38 事故：23 段——闭环 A/B/C/D 细节的归宿是 ⑦.2/⑦.3/⑦.4 与 ⑩，不留在 ②）；"
+                         "形态 = 场景开场 / 完整闭环（单主线图）/ 分支流预告 三块" % len(plain))
+        if not re.search(r"分支流预告", s2):
+            fails.append("② 缺「分支流预告」（标签 + 逐支 bullet 带行号）")
+
+    # F5 ⑥ 每件 边界与副作用 + 上下游表格
+    s6 = sec(r"^## ⑥ ", r"^## ⑦ ")
+    if s6:
+        heads = [(mm.start(), mm.group(0)) for mm in re.finditer(r"^#{3,4} 6\.\d[\s\S]", s6, re.M)]
+        for k, (pos, h) in enumerate(heads):
+            end = heads[k + 1][0] if k + 1 < len(heads) else len(s6)
+            body = s6[pos:end]
+            if "```java" not in body and "```\n" not in body:
+                continue
+            st["items"] += 1
+            if "边界与副作用" not in body:
+                fails.append("6.x 缺「边界与副作用」三 bullet（边界/副作用/风险点）：%s" % h.strip()[:46])
+            if "【上下游】" in body and "| 方向 |" not in body:
+                fails.append("⑥【上下游】散段 → 应为两行表格（方向/谁/给拿什么形态/失败时看到什么）：%s"
+                             % h.strip()[:46])
+    return dict(fails=fails, report=report, stats=st)
 
 
 def check_pedagogy(lines, blocks):
@@ -2310,6 +2402,29 @@ def main():
         print("   ↳ 升 FAIL 档条件：⑯ 写明「判据版本：v%s」；一键补齐："
               "`python scripts/sync_gate_result.py <本文件> --src <仓库根> --apply`" % GATE_VERSION)
 
+    # ⓪f 批次3 结构基准门（2.29 · §6.1.3 第 9~13 条 · FAIL 档由 STYLE4 版本门决定）
+    s3s = check_batch3_structure("\n".join(lines))
+    st3 = s3s["stats"]
+    style4_strict = style_ver is not None and float(style_ver) >= float(STYLE4_FAIL_SINCE)
+    mode4 = ("FAIL 档（本批声明判据版本 v%s ≥ %s）" % (style_ver, STYLE4_FAIL_SINCE)) if style4_strict \
+        else ("报告档（本批未声明判据版本 ≥ %s，不追溯旧产物；回修后由 sync_gate_result 写入当前版本即从严）" % STYLE4_FAIL_SINCE)
+    print("\n⓪f 批次3 结构基准门（v%s · §6.1.3 第 9~13 条 · %s）" % (GATE_VERSION, mode4))
+    print("   ⑫.5 任务书fenced=%s ｜ ⑦.1 fenced=%s ｜ ④五段标注=%s/4 ｜ ②段落=%s（≤8） ｜ ⑥件=%s（逐件查边界与副作用/上下游表格）"
+          % (st3["f_taskbook"], st3["f71"], st3["five"], st3["p2"], st3["items"]))
+    for r in s3s["fails"]:
+        print(("   [FAIL] " if style4_strict else "   [报告] ") + r)
+    for r in s3s["report"]:
+        print("   [报告] " + r)
+    if not s3s["fails"]:
+        print("   → PASS")
+    if not style4_strict:
+        print("   ↳ 升 FAIL 档条件：⑯ 写明「判据版本：v%s」；一键补齐："
+              "`python scripts/sync_gate_result.py <本文件> --src <仓库根> --apply`" % GATE_VERSION)
+    if style4_strict and s3s["fails"]:
+        fails_0f = list(s3s["fails"])
+    else:
+        fails_0f = []
+
     # ① 正向
     fid = check_fidelity(blocks, by_class, rev_index)
     chk = [r for r in fid if not r["exempt"]]
@@ -2626,7 +2741,7 @@ def main():
 
     ok = (not s_reasons and lost == 0 and not unattr and not bad_rev and not bad_den and not sig and not ln_rows
           and not bad_use and not bad_io and not bad_wire and not bad_pos and not bad_ext and not p_bad
-          and not core_bad_n and not py_bad and not form_bad_n and not style_bad_n)
+          and not core_bad_n and not py_bad and not form_bad_n and not style_bad_n and not fails_0f)
 
     print("\n⓪~⑤ 之外的残留引用自查（闸门盲区，SKILL §6.4「⑥ 节之外的残留引用检查」必做清单，需人工过）：")
     print("   ②多步示意（是否漏步/顺序反）｜⑦调用链表（方法名·字段名·两跳顺序）｜⑦边界条件表（行为是否与真实分支一致）")
