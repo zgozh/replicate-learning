@@ -20,7 +20,7 @@ def seg_bound(lines, open_pat, close_pat):
     return (st, en) if st is not None else (None, None)
 
 def split_long_para(para, maxp=MAXP):
-    """把超长段按句读切成 ≤maxp 的若干段；>=2 段时返回列表，否则 None。"""
+    """把超长段按句读切成 ≤maxp 的若干段（两轮：句读优先，仍超长按逗号软切）；>=2 段时返回列表，否则 None。"""
     if len(para) <= maxp:
         return None
     parts, cur = [], ""
@@ -31,7 +31,20 @@ def split_long_para(para, maxp=MAXP):
             cur = ""
     if cur:
         parts.append(cur)
-    return parts if len(parts) >= 2 else None
+    fixed = []
+    for p in parts:
+        if len(p) <= maxp:
+            fixed.append(p)
+            continue
+        buf = ""
+        for ch in p:
+            buf += ch
+            if ch in "，、：" and len(buf) >= maxp * 0.7:
+                fixed.append(buf)
+                buf = ""
+        if buf:
+            fixed.append(buf)
+    return fixed if len(fixed) >= 2 else None
 
 def fix_paras(lines, sec_name, dry=False):
     """在指定一级节内对"非表格/非列表/非围栏/非标题"的行做超长段断段。"""
@@ -51,8 +64,9 @@ def fix_paras(lines, sec_name, dry=False):
             out.append(l)
             continue
         s = l.strip()
-        skip = (not s) or inside or s.startswith("|") or s.startswith("-") or s.startswith("*") \
-               or s.startswith("#") or s.startswith(">") or re.match(r"^\d+[.、)]", s)
+        is_list = bool(re.match(r"^[-*+]\s", s)) or bool(re.match(r"^\d+[.、)]\s", s))
+        skip = (not s) or inside or s.startswith("|") or s.startswith("#") \
+               or s.startswith(">") or is_list
         if skip:
             out.append(l)
             continue
