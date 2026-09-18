@@ -59,8 +59,8 @@
 | # | 文件 | 行数 | 一句话职责 |
 |---|---|---|---|
 | 1 | `Makefile` | 219 | 把十几种命令组合钉成唯一写法；自身几乎无逻辑 |
-| 2 | `scripts/check.py` | 216 | 开机四件依赖自检：缺谁、怎么装、说清楚再退出 |
-| 3 | `scripts/serve.sh` | 534 | 本地编排总脚本：清场 → 配置 → 装依赖 → 起三个服务 → 等端口 |
+| 2 | `deer-flow:scripts/check.py` | 216 | 开机四件依赖自检：缺谁、怎么装、说清楚再退出 |
+| 3 | `deer-flow:scripts/serve.sh` | 534 | 本地编排总脚本：清场 → 配置 → 装依赖 → 起三个服务 → 等端口 |
 
 对账：行数 = `wc -l` 实测；与批次21 排批表 §4.2 的本批行数逐项一致。
 
@@ -169,7 +169,7 @@ Nginx    超时 10s      # 读配置文件而已，10 秒不成就别等了
 #### ⑦.1 调用链（编号列表带行号 + 跨批标注）
 
 1  → 人敲 `make dev`  →  `Makefile:145`
-2  →  `make` 先跑依赖自检  →  `Makefile:146`  →  `scripts/check.py`（本批 6.3）
+2  →  `make` 先跑依赖自检  →  `Makefile:146`  →  `deer-flow:scripts/check.py`（本批 6.3）
 3  →  `serve.sh` 载入 `.env` 并反解仓库根  →  `scripts/serve.sh:31-40`
 4  →  `serve.sh` 计算"哪些根算自己"  →  `scripts/serve.sh:97-103`
 5  →  `serve.sh` 清场（幂等启动的起点）  →  `scripts/serve.sh:262-281`  →  `stop_all`
