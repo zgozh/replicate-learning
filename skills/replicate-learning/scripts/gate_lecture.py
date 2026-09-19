@@ -1515,11 +1515,14 @@ def check_form(lines):
         # 2.30（E12）：每件【怎么用】**段内**须有「可照抄的最小调用」
         #   （段界 = 【怎么用】→ 下一个【上下游】/【怎么接】/【讲解】/下一件；不能拿【怎么接】
         #    里的"最小可编译实现"充数——那正是本条要区分的两件事）
-        m_use = re.search(r"^\*\*【怎么用】\*\*", body, re.M)
+        #   标记形态**两种都认**（2.30 内修正）：`**【怎么用】**` 与存量批的 `【怎么用】`；
+        #   存量批还有把 `【上下游】` 内联在同一段尾的写法——段界若抓不到就退化为"到下一件"，
+        #   此时只要该件内有片段即算通过（宽松兜底，避免把"格式旧"误判成"内容缺"）。
+        m_use = re.search(r"^(?:\*\*)?【怎么用】(?:\*\*)?", body, re.M)
         use_seg = ""
         if m_use:
             tail = body[m_use.end():]
-            m_end = re.search(r"^\*\*【(?:上下游|怎么接|讲解)】\*\*|^### 6\.", tail, re.M)
+            m_end = re.search(r"^(?:\*\*)?【(?:上下游|怎么接|讲解)】(?:\*\*)?|^#{3,6}\s*6\.\d", tail, re.M)
             use_seg = tail[: m_end.start()] if m_end else tail
         if not MINSNIP_RE.search(use_seg):
             miss_snip.append(at)
