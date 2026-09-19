@@ -60,7 +60,17 @@ import tarfile
 import subprocess
 import collections
 
-GATE_VERSION = "2.30"    # 2.29：⓪f 批次3 结构基准门（五项：⑫.5 fenced / ⑦.1 fenced / ④ 五段式 / ② 段落≤8 / ⑥ 边界与副作用+上下游表格）    # 2.28：⓪e 增补 E11（用户第四轮要求 · ⑫ 提示词块化与多轮）：
+GATE_VERSION = "2.30"    # 2.30：⓪d 增补 E12/E13（用户第五轮要求 · ⑥ 的可复制性）：
+                         #       E12 ⑥ **每件**的【怎么用】须含「可照抄的最小调用」——"怎么用"若只写
+                         #           "某处会调用它"，读者仍然照抄不出一次真实调用。锚 = 件区间内命中
+                         #           MINSNIP_RE（可照抄的最小调用｜最小可编译实现｜教学合成片段）。
+                         #       E13 凡**有【怎么接】的件**，其中须含「最小可编译实现」——接入说明若只有
+                         #           步骤没有可编译片段，读者仍需自己猜 API 形状。
+                         #       校准：批次1-5 的调用片段散在【怎么用】文字/代码块里（MINSNIP 命中
+                         #       2-6 处/批），ragent 批次1-10 同类；阶段3 批次31-38 整体归零。
+                         #       门 = SNIP_FAIL_SINCE=2.30（与 2.29 结构基准门分门，不追溯 2.29 及以下）。
+                         # 2.29：⓪f 批次3 结构基准门（五项：⑫.5 fenced / ⑦.1 fenced / ④ 五段式 / ② 段落≤8 / ⑥ 边界与副作用+上下游表格）
+                         # 2.28：⓪e 增补 E11（用户第四轮要求 · ⑫ 提示词块化与多轮）：
                          #       ⑫ 里所有"发给 AI 的提示词"必须放进 ```text 代码块（观感 + 可复制），
                          #       且**第 5 条须分多轮**（≥2 块）——现实开发是多轮问答（轮1 勘察禁写码 →
                          #       轮2 只出骨架 → 轮3 实现+自检），每轮一块并标轮次目标/期望形态/偏差信号。
@@ -1420,6 +1430,24 @@ def form_scope(lines):
     return False, which
 
 
+SNIP_FAIL_SINCE = "2.30"      # 2.30：⑥ 可复制性（每件【怎么用】的最小调用 /【怎么接】的最小可编译实现）FAIL 档起点
+
+
+def snip_scope(lines):
+    """2.30：E12/E13 的适用档位（与 form_scope 同款版本门）。
+
+    批次在 ⑯ 声明「判据版本 vX.Y」且 X.Y ≥ 2.30 → FAIL 档；未声明或更早 → 报告档
+    （回修后由 sync_gate_result 写入当前版本即自动从严）。
+    """
+    has_v, which, _ = ver_marker(lines)
+    if has_v and which:
+        try:
+            return float(which) >= float(SNIP_FAIL_SINCE), which
+        except ValueError:
+            return False, which
+    return False, which
+
+
 def check_form(lines):
     """2.25：⓪d 形态质量检查（§6.4 ②⑤⑥⑭ 必含形态的机械判定，Goodhart 防线）。
 
@@ -1463,6 +1491,7 @@ def check_form(lines):
     idx = [i for i, l in enumerate(lines) if ITEM_RE.match(l)]
     mask = _prose_mask(lines)
     miss_intro, miss_tbl, miss_replay = [], [], []
+    miss_snip, miss_howto = [], []          # 2.30：E12 / E13
     for k, i in enumerate(idx):
         end = idx[k + 1] if k + 1 < len(idx) else len(lines)
         stops = [j for j in range(i + 1, end) if mask[j] and lines[j].startswith("## ")]
@@ -1483,7 +1512,24 @@ def check_form(lines):
             stats["stars"] += 1
             if "逐步回放" not in body:
                 miss_replay.append(at)
+        # 2.30（E12）：每件【怎么用】**段内**须有「可照抄的最小调用」
+        #   （段界 = 【怎么用】→ 下一个【上下游】/【怎么接】/【讲解】/下一件；不能拿【怎么接】
+        #    里的"最小可编译实现"充数——那正是本条要区分的两件事）
+        m_use = re.search(r"^\*\*【怎么用】\*\*", body, re.M)
+        use_seg = ""
+        if m_use:
+            tail = body[m_use.end():]
+            m_end = re.search(r"^\*\*【(?:上下游|怎么接|讲解)】\*\*|^### 6\.", tail, re.M)
+            use_seg = tail[: m_end.start()] if m_end else tail
+        if not MINSNIP_RE.search(use_seg):
+            miss_snip.append(at)
+        # 2.30（E13）：有【怎么接】的件，其中须有「最小可编译实现」
+        if "【怎么接】" in body and "最小可编译实现" not in body:
+            miss_howto.append(at)
     stats["no_intro"], stats["no_tbl"], stats["no_replay"] = len(miss_intro), len(miss_tbl), len(miss_replay)
+    stats["miss_snip"] = miss_snip
+    stats["miss_howto"] = miss_howto
+    stats["no_snip"] = len(miss_snip)
     if miss_intro:
         fails.append("⑥ %d/%d 件缺「本文件要解决的一个问题」开场（%s）——§6.4 ⑥ 第 1 层：先给问题与"
                      "输入/输出再进代码（批次33-38 实录：全部归零，问题被压进【讲解】第一句）"
@@ -2359,19 +2405,40 @@ def main():
         print("\n⓪d 形态质量（v%s · §6.4 ②⑤⑥⑭ · %s）" % (GATE_VERSION, mode))
         if fs:
             print("   ②流水线图箭头行=%s ｜ ⑤穿透表=%s 骨架表=%s ｜ ⑥件=%s 问题开场缺=%s 要点表缺=%s ★件=%s 回放缺=%s"
-                  " ｜ ⑭问答 %s题/完整答 %s"
+                  " ｜ ⑥最小调用缺=%s ｜ ⑭问答 %s题/完整答 %s"
                   % (fs["sec2"], "有" if fs["sec5_pen"] else "无", "有" if fs["sec5_skel"] else "无",
                      fs["pieces"], fs["no_intro"], fs["no_tbl"], fs["stars"], fs["no_replay"],
-                     fs["q"], fs["ans"]))
+                     fs["no_snip"], fs["q"], fs["ans"]))
         else:
             print("   ②⑤⑥⑭ 形态统计 → 齐（② 图 ｜ ⑤ 双清单 ｜ ⑥ 问题开场+要点表+★回放 ｜ ⑭ 完整答案）")
         for r in form["fails"]:
             print(("   [FAIL] " if form_strict else "   [报告] ") + r)
-        if not form["fails"]:
+        # 2.30（E12/E13 · ⑥ 可复制性）：每件【怎么用】的最小调用 /【怎么接】的最小可编译实现
+        snip_strict, snip_ver = snip_scope(lines)
+        snip_bad_n = 0
+        for _lst, _tmpl in ((fs["miss_snip"],
+                             "⑥ %d/%d 件【怎么用】缺「可照抄的最小调用」（%s）——§6.4 ⑥ 第 6 层："
+                             "\"怎么用\"只写\"某处会调用它\"，读者照抄不出一次真实调用；"
+                             "须给可直接复制的片段（代码块，标\"教学合成片段\"）"),
+                            (fs["miss_howto"],
+                             "⑥ %d/%d 件的【怎么接】缺「最小可编译实现」（%s）——接入说明若只有步骤"
+                             "没有可编译片段，读者仍需自己猜 API 形状")):
+            if _lst:
+                print(("   [FAIL] " if snip_strict else "   [报告] ")
+                      + _tmpl % (len(_lst), fs["pieces"], "、".join(_lst[:6])))
+                if snip_strict:
+                    snip_bad_n += len(_lst)
+        if not form["fails"] and not snip_bad_n:
             print("   → PASS")
-        if not form_strict:
+        if not form_strict or not snip_strict:
+            _gates = []
+            if not form_strict:
+                _gates.append("%s（⓪d 形态）" % FORM_FAIL_SINCE)
+            if not snip_strict:
+                _gates.append("%s（⑥ 可复制性）" % SNIP_FAIL_SINCE)
             print("   ↳ 升 FAIL 档条件：⑯ 写明「判据版本：v%s」（新批由 new_batch.py 自动落笔）；"
-                  "一键补齐：`python scripts/sync_gate_result.py <本文件> --src <仓库根> --apply`" % GATE_VERSION)
+                  "一键补齐：`python scripts/sync_gate_result.py <本文件> --src <仓库根> --apply`"
+                  % "、v".join(_gates))
 
     # ⓪e 结构密度与排版（2.26 · §6.4 ⑦⑫⑩③ 结构 + ②④ 排版 + 围栏标注 · FAIL 档）
     sden = check_structure_density("\n".join(lines))
@@ -2566,6 +2633,8 @@ def main():
 
     core_bad_n = sum(1 for v in core.values() if v) if (st["is_batch"] and core_strict) else 0
     form_bad_n = len(form["fails"]) if (st["is_batch"] and form_strict) else 0
+    if not st["is_batch"]:
+        snip_bad_n = 0          # 2.30：非教材文件不判 ⑥ 可复制性（该值只在教材分支里被赋）
     style_bad_n = 0
     if st["is_batch"]:
         for r in sden["fails"]:
@@ -2741,7 +2810,8 @@ def main():
 
     ok = (not s_reasons and lost == 0 and not unattr and not bad_rev and not bad_den and not sig and not ln_rows
           and not bad_use and not bad_io and not bad_wire and not bad_pos and not bad_ext and not p_bad
-          and not core_bad_n and not py_bad and not form_bad_n and not style_bad_n and not fails_0f)
+          and not core_bad_n and not py_bad and not form_bad_n and not style_bad_n and not fails_0f
+          and not snip_bad_n)
 
     print("\n⓪~⑤ 之外的残留引用自查（闸门盲区，SKILL §6.4「⑥ 节之外的残留引用检查」必做清单，需人工过）：")
     print("   ②多步示意（是否漏步/顺序反）｜⑦调用链表（方法名·字段名·两跳顺序）｜⑦边界条件表（行为是否与真实分支一致）")
