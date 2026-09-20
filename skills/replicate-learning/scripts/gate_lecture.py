@@ -263,8 +263,8 @@ def _len_or0(x):
     return len(x) if x else 0
 
 
-def _manifest_for(lec):
-    """位置契约清单的三个查找位：讲稿旁 / NOTES/_tools/（deer-flow 约定）/ 讲稿目录。
+def _manifest_path_for(lec):
+    """位置契约清单**路径**的三个查找位：讲稿旁 / NOTES/_tools/（deer-flow 约定）/ 讲稿目录。
     用 basename 匹配，避免中文文件名在跨目录拼接时的形态差异。"""
     base = os.path.basename(lec) + ".blocks.json"
     for d in (os.path.dirname(lec),
@@ -272,11 +272,18 @@ def _manifest_for(lec):
               os.path.join(lec.split(os.sep + "NOTES" + os.sep)[0] if (os.sep + "NOTES" + os.sep) in lec else os.path.dirname(lec), "NOTES", "_tools")):
         p = os.path.join(d, base)
         if os.path.isfile(p):
-            try:
-                return json.load(io.open(p, encoding="utf-8"))
-            except Exception:
-                return None
+            return p
     return None
+
+
+def _manifest_for(lec):
+    p = _manifest_path_for(lec)
+    if not p:
+        return None
+    try:
+        return json.load(io.open(p, encoding="utf-8"))
+    except Exception:
+        return None
 
 
 def _py_index(root):
@@ -3089,7 +3096,7 @@ def main():
         result = LC.make_result("gate_lecture.py", checks,
                                 contract_version=GATE_VERSION,
                                 lecture_sha256=LC.sha256_file(lec),
-                                source_manifest_sha256=LC.sha256_file(_manifest_for(lec) or "") if _manifest_for(lec) else None,
+                                source_manifest_sha256=(LC.sha256_file(_mp) if (_mp := _manifest_path_for(lec)) else None),
                                 source_root=ROOT,
                                 extra=dict(fidelity=fid, reverse=rev_rows, density=den, lineno=ln_rows,
                                            usage=dict(items=u_items, ext=u_ext),
