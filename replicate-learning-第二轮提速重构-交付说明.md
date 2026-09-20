@@ -412,3 +412,22 @@ python tests/e2e_scripted_run.py         # 26 步期望全中（+9 步：4 条�
    其余动态对象数的检查点若写出 `PASS(checked=0)` 仍会抛错（这是有意的编程错误护栏）。
 4. **`publish_batch.py` 本轮没被用上**：批次49 仍写了约 16 KB 的一次性归档脚本。工具已就绪，
    下一批请直接用它（`--record` 一份记录更新覆盖矩阵/总索引/阶段页/状态，冲突零写入）。
+
+## 12. 第五轮同步（2026-09-20）
+
+按 §6.6 DoD 把第五轮的修改同步到全部安装副本；同步的是同一份字节：源仓 `skills/replicate-learning/`
+（**100 个文件**，排除 `__pycache__`）逐文件 SHA256 比对，四处副本全部 **列表差异 0 / 内容差异 0**。
+
+| 位置 | 路径 | 状态 |
+|---|---|---|
+| 源仓库 | `D:\develop\workspace\replicate-learningV2` → `origin/master` | 提交 `756dccc`，已推送 `a086afd..756dccc` |
+| WorkBuddy | `C:\Users\13610\.workbuddy\skills\replicate-learning` | 已覆盖 |
+| Codex | `D:\codexData\skills\replicate-learning` | 已覆盖 |
+| DSH 用户技能库 | `C:\Users\13610\.agents\skills\replicate-learning` | 已覆盖 |
+| dsh-toolkit（工具快照库） | `…\lg-ocr\文档\ocr\dsh-toolkit\skills\replicate-learning` | 提交 `8601d62`，已推送 `origin/main` |
+
+安装位实跑（四处逐个跑，各自目录下）：`skill_selfcheck` **检查项 112，失败 0 → PASS ✅**；
+`v2_selfcheck` **PASS (6 contract entries)**。
+
+> 上一轮（§10）里的 `a086afd` 是你自己提交的闸门清单路径修复（`_manifest_path_for`）——本轮在其之上继续，
+> 未回退它。另：`.gitignore` 补了 `test2.md`（与 `test.md` 同类会话素材），未改动任何已跟踪文件的内容。
