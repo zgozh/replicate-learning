@@ -29,6 +29,21 @@
 - `plan_bad_keys.json`：四种坏键（字符串内部行、续行、越界、非数字）——预检必须逐条报出**可执行的错误**，
   而不是打印警告后继续。
 
+## 端到端脚本化试运行
+
+`tests/e2e_scripted_run.py` 用这两组夹具 + 真实批次48 教材跑完整第二轮流水线
+（清单 → 预检 → 脚手架 → 组装注入 → 门禁 → 盖章 → 发布 → Python 侧），
+并用 `batch_trace` 记录**脚本化步骤**的分步耗时：
+
+```bash
+python skills/replicate-learning/tests/e2e_scripted_run.py            # 产物在 .replicate-learning-log/e2e-scripted/
+python skills/replicate-learning/tests/e2e_scripted_run.py --work /tmp/e2e
+```
+
+没装 ragent-official 时自动跳过依赖真实教材的三步并打印说明（可用 `RAGENT_ROOT` 指定项目根）。
+**它只测脚本侧**：模型写作耗时（investigate/write）在报表里单列为"未记录阶段"，脚本不臆造该数字。
+参考实测值见根目录 `replicate-learning-第二轮提速重构-交付说明.md` §4。
+
 ## 已知缺口（诚实记录）
 
 本机只有 ragent-official 一个项目的完整第一册（Java）。**没有可用的 Python 项目完整第一册批次**，

@@ -149,6 +149,9 @@ python scripts/batch_build.py --batch /tmp/batch.json --check
 
 # 重建夹具（有 ragent-official 时；只读原资料，--check 只校验不写盘）
 python tests/fixtures/batch48/build_batch48_fixture.py --check
+
+# 端到端脚本化试运行（本轮 §4 数据的来源；缺 ragent-official 时自动跳过三步并打印说明）
+python tests/e2e_scripted_run.py --work /tmp/e2e
 ```
 
 对真实项目的一批：
