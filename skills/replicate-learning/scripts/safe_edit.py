@@ -96,8 +96,12 @@ def load(path):
 
 
 def save(lines, path, backup=True):
-    """tmpnew → os.replace（禁止直接 open(path,'w') 写长内容：中断会留下半截文件）。"""
-    if backup:
+    """tmpnew → os.replace（禁止直接 open(path,'w') 写长内容：中断会留下半截文件）。
+
+    `backup=True` 只在**目标已存在**时留 `path.bak`：目标还不存在时（新批次第一次构建）
+    去读它是 `FileNotFoundError`——batch_build 第一次落盘就撞上过。
+    """
+    if backup and os.path.exists(path):
         bak = path + ".bak"
         if not os.path.exists(bak):
             with open(bak, "wb") as f:

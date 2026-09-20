@@ -271,6 +271,8 @@ def diff(before, after):
 
 
 def main():
+    from lecture_checks import configure_stdio      # stdout 被重定向时按 GBK 编码会崩在打印上
+    configure_stdio()
     ap = argparse.ArgumentParser(description='全库记分卡 + 判据回归比对')
     ap.add_argument('--root', required=True, help='讲解文件目录（递归扫 *.md）')
     ap.add_argument('--src', required=True, help='源码根目录')

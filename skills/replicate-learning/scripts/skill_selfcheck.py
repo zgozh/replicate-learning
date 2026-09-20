@@ -1053,6 +1053,75 @@ def check_preflight(r):
         r.ok('结果 schema：检查对象为 0 不许写 PASS（真空通过被封堵）')
 
 
+def check_slots(r):
+    """㉒ 稳定源码槽位与可重复构建（方案 §3.3）：幂等、hash 漂移拒绝、旧分片降级告警。
+
+    为什么钉在"幂等 + 拒绝"这两条上：第48批的返工正是"重注入后旧占位串消失，只能靠类声明消歧猜块"
+    （一次猜错就要重写）；而"源文件改了却照旧套行号"会静默制造 ① 保真 FAIL。两条都必须可机械复现。
+    """
+    sys.path.insert(0, HERE)
+    import inject_source as INJ          # noqa: E402
+    import new_batch as NB               # noqa: E402
+    import contextlib                    # noqa: E402
+
+    fix = os.path.join(ROOT, 'tests', 'fixtures', 'batch48')
+    src = os.path.join(fix, 'project')
+    if not os.path.isdir(src):
+        r.fail('缺回归夹具 %s（槽位自测钉在真实批次48 上）' % src)
+        return
+    tmp = tempfile.mkdtemp(prefix='slot_selfcheck_')
+    try:
+        skeleton = os.path.join(tmp, 'skeleton.md')
+        state_path = os.path.join(tmp, 'batch.json')
+        old = sys.argv
+        sys.argv = ['new_batch.py', '--stage', '3', '--batch', '48', '--title', 'x', '--classes', 'y',
+                    '--sha', '16984b9', '--out', skeleton, '--src', src,
+                    '--plan', os.path.join(fix, 'b48_inject_plan_fixed.json'),
+                    '--batch-json', state_path]
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                NB.main()
+        finally:
+            sys.argv = old
+        state = json.load(io.open(state_path, encoding='utf-8'))
+        text = io.open(skeleton, encoding='utf-8').read()
+        if text.count('<!-- src-slot') == 8 and len(state['slots']) == 8:
+            r.ok('槽位：按注释计划为 8 件各生成一个稳定槽位（ID 含源文件 sha256 前 8 位）')
+        else:
+            r.fail('槽位生成数不对：标记 %d 个 / 计划 %d 个（都应为 8）'
+                   % (text.count('<!-- src-slot'), len(state['slots'])))
+            return
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            rc1 = INJ.main_with(['inject_source.py', skeleton, str(state['annotations']), '--src', src])
+        first = io.open(skeleton, 'rb').read()
+        with contextlib.redirect_stdout(io.StringIO()):
+            rc2 = INJ.main_with(['inject_source.py', skeleton, str(state['annotations']), '--src', src])
+        if rc1 == 0 and rc2 == 0 and io.open(skeleton, 'rb').read() == first:
+            r.ok('槽位：重复注入逐字节幂等（同一计划连注两次，文件 hash 不变）')
+        else:
+            r.fail('槽位注入不幂等：rc=%s/%s，文件是否变化=%s'
+                   % (rc1, rc2, io.open(skeleton, 'rb').read() != first))
+
+        drifted = os.path.join(tmp, 'src')
+        shutil.copytree(src, drifted)
+        victim = os.path.join(drifted, state['slots'][0]['src'])
+        io.open(victim, 'a', encoding='utf-8', newline='').write('\n// drift\n')
+        before = io.open(skeleton, 'rb').read()
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                INJ.main_with(['inject_source.py', skeleton, str(state['annotations']), '--src', drifted])
+            r.fail('槽位：源文件 hash 变了却照样写入——"悄悄把旧行号套到改过的源码上"会复发')
+        except SystemExit as exc:
+            unchanged = io.open(skeleton, 'rb').read() == before
+            if 'hash' in str(exc) and unchanged:
+                r.ok('槽位：源文件 hash 变化 → 拒绝写入且原文件未动（不降级成旧寻址）')
+            else:
+                r.fail('槽位 hash 护栏异常：拒绝理由=%s，文件未改动=%s' % (str(exc)[:80], unchanged))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def main():
     print('=' * 88)
     print('技能文档一致性自检（skill_selfcheck.py）  根目录:', ROOT)
@@ -1100,6 +1169,8 @@ def main():
     check_sync_idempotent(r)
     print('\n㉑ 开批预检（方案 §3.2）：用真实批次48 夹具钉住验收数字')
     check_preflight(r)
+    print('\n㉒ 稳定源码槽位与可重复构建（方案 §3.3）：幂等 + hash 漂移拒绝')
+    check_slots(r)
     print('\n' + '=' * 88)
     print('检查项 %d，失败 %d → %s' % (r.n, r.bad, 'PASS ✅' if r.bad == 0 else 'FAIL ❌'))
     print('=' * 88)

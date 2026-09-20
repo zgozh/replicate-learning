@@ -2209,6 +2209,11 @@ def check_usage(lines):
 # ── 主流程 ───────────────────────────────────────────────────────────────
 def main():
     global ROOT
+    try:                                    # 见 lecture_checks.configure_stdio 的说明：
+        import lecture_checks as _LC        # stdout 被重定向时按 GBK 编码会让本脚本崩在打印上
+        _LC.configure_stdio()
+    except Exception:
+        pass
     if len(sys.argv) < 2:
         print(__doc__)
         return 2

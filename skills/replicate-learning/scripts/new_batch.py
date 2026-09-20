@@ -13,13 +13,22 @@
         --classes "ConversationMemoryService★, JdbcConversationMemoryStore★" \\
         --sha 6aef475 --out "NOTES/教学讲解/阶段8-.../批次1-....md" [--src <仓库根>] [--force]
 
+    # 方案 §3.3：给每件生成**稳定源码槽位**（块身份 = 槽位 ID + 源路径，不再靠标题/contains 猜）
+    python new_batch.py --stage 3 --batch 48 --title "…" --classes "…" --sha 16984b9 \\
+        --out "…/批次48-….md" --src <仓库根> \\
+        --plan logs/b48_inject_plan.json --batch-json logs/b48_batch.json
+
 产出：批头（一句话/核心类/验收结果/源码依据 commit）+ ①~⑯ + 索引，共 **17 个 `## ` 节**，
 其中 `⑦.5`、⑯ 六项空表、⑫ 八条与八段提示词标签都已就位；正文占位符沿用模板的 `__xxx__` 写法。
+带 `--plan` 时，⑥ 按计划逐件生成"件标题 + 槽位标记 + 空围栏"，槽位标记写明源路径、行段与
+源文件 sha256——**重复构建靠它寻址，不靠 `contains` 里那些注入后就消失的占位串**。
 
 不做的事：不生成任何讲解内容、不写任何代码、不跑闸门（跑闸门是下一步，命令会打印出来）。
 """
 import argparse
+import hashlib
 import io
+import json
 import os
 import re
 import sys
@@ -110,6 +119,65 @@ def skeleton_lines(tpl_path=TPL, notes=None):
     return out
 
 
+def slot_id(rel, sha256, seg):
+    """稳定槽位 ID：`source:<sha256 前 8 位>:<件号>`。
+
+    身份 = 源码内容 hash + 件号：改源码 → hash 变 → 槽位身份变（旧行号不会被悄悄套用）；
+    改标题/改 `contains`/重写正文 → 槽位不变（这正是第48批反复"猜旧占位串"的根因）。
+    """
+    return "source:%s:%s" % (sha256[:8], seg)
+
+
+def slot_marker(rel, start, end, sha256, seg, lang="java"):
+    return ('<!-- src-slot id="%s" path="%s" lines="%d-%d" sha256="%s" lang="%s" -->'
+            % (slot_id(rel, sha256, seg), rel, start, end, sha256, lang))
+
+
+def plan_section(out_lines, plan, src_root):
+    """用注释计划重写 ⑥ 节：每件 = 件标题 + 槽位标记 + 空围栏（源码由注入器填）。
+
+    为什么由计划生成 ⑥ 而不是让模型手写件骨架：件标题里的 ★、件号（6.x）、以及"这一件对应哪个源文件、
+    哪一段行"三者必须**一开始就一致**——第48批的代价之一就是靠 `contains` 里的 `__INJECT_0N__`
+    把块钉住，注入后占位串消失，后续改动只能靠"类声明消歧"猜。
+    """
+    i6 = next(i for i, l in enumerate(out_lines) if re.match(r'^##\s*' + CIRCLED[5] + r'\s', l))
+    i7 = next(i for i in range(i6 + 1, len(out_lines))
+              if re.match(r'^##\s*' + CIRCLED[6] + r'\s', out_lines[i]))
+    head = out_lines[i6 + 1:i7]
+    # 保留模板给 ⑥ 的阅读顺序/注释归属等**指导语**（以 `> ` 开头的行），其余占位件由计划替换
+    guidance = [l for l in head if l.startswith('> ')]
+    body = ['']
+    body += guidance + ['']
+    made = []
+    for n, spec in enumerate(plan.get("blocks", []), 1):
+        seg = spec.get("seg") or ("6.%d" % n)
+        rel = spec["src"]
+        path = os.path.join(src_root, rel)
+        if not os.path.isfile(path):
+            raise SystemExit('[ABORT] 计划里的源文件不存在：%s（先修计划再生成骨架）' % rel)
+        lines = io.open(path, encoding='utf-8').read().split('\n')
+        start = spec.get("start") or 1
+        end = spec.get("end") or (len(lines) - 1 if lines and lines[-1] == '' else len(lines))
+        sha = hashlib.sha256(io.open(path, 'rb').read()).hexdigest()
+        anchor = spec.get("anchor") or ("#### %s `%s`" % (seg, os.path.basename(rel)[:-5]))
+        title = anchor if anchor.startswith('####') else ('#### %s' % anchor.lstrip('# '))
+        lang = spec.get("lang", "java")
+        body += [title, '',
+                 slot_marker(rel, start, end, sha, seg, lang), '',
+                 '```' + lang,
+                 '// __INJECT__（源码由 scripts/inject_source.py 按槽位注入；**不要手写代码**）',
+                 '```', '',
+                 '**本文件要解决的一个问题**：__问题一句话__ + 输入/输出：__输入描述__；输出：__输出描述__。',
+                 '', '**白话开场**：__这段代码解决什么、看完能答什么__', '',
+                 '**构造方式与手法**：__谁 new/注入它、生命周期归谁管__ ｜ __模式/数据结构/算法 + 权衡__',
+                 '', '**逐行要点表**：', '', '| 行 | 讲解 |', '|---|---|', '| __行号__ | __控制流/边界说明__ |', '',
+                 '**边界与副作用**：__边界/副作用/风险点__', '',
+                 '**【怎么用】**', '', '**【上下游】**', '', '**【怎么接】**', '', '---', '']
+        made.append(dict(seg=seg, slot=slot_id(rel, sha, seg), src=rel, start=start, end=end, lang=lang))
+    out_lines[i6 + 1:i7] = body
+    return made
+
+
 def header(stage, batch, title, classes, sha, verify):
     return [
         '# 阶段%s · 批次%s —— %s' % (stage, batch, title),
@@ -124,6 +192,8 @@ def header(stage, batch, title, classes, sha, verify):
 
 
 def main():
+    from lecture_checks import configure_stdio      # stdout 被重定向时按 GBK 编码会崩在打印上
+    configure_stdio()
     ap = argparse.ArgumentParser(description='从模板骨架生成一份新批次讲解文件')
     ap.add_argument('--stage', required=True)
     ap.add_argument('--batch', required=True)
@@ -134,11 +204,20 @@ def main():
     ap.add_argument('--out', required=True, help='输出路径（相对 --src 或绝对路径）')
     ap.add_argument('--src', default=os.getcwd(), help='宿主仓库根目录（缺省=当前目录）')
     ap.add_argument('--force', action='store_true', help='覆盖已存在的文件')
+    ap.add_argument('--plan', help='注释计划 JSON：按它逐件生成⑥的槽位与件骨架（方案 §3.3）')
+    ap.add_argument('--batch-json', dest='batch_json',
+                    help='同时写一份批次状态 batch.json（供 batch_build.py 组装/注入/复建）')
+    ap.add_argument('--parts-dir', dest='parts_dir', help='分片目录（缺省=<out 同目录>/parts）')
+    ap.add_argument('--manifest', help='本批源文件清单 JSON（记进 batch.json，供复建与校验）')
     ap.add_argument('--print-skeleton', action='store_true', help='只打印骨架到标准输出（不写文件）')
     a = ap.parse_args()
 
     notes = []
     body = skeleton_lines(notes=notes)
+    slots = []
+    if a.plan:
+        plan = json.load(io.open(a.plan, encoding='utf-8'))
+        slots = plan_section(body, plan, os.path.abspath(a.src))
     text = '\n'.join(header(a.stage, a.batch, a.title, a.classes, a.sha, a.verify) + body) + '\n'
 
     # 2.19：在 ⑯ 标题后写明判据版本 —— 新批从第一次跑闸门就落在 ⓪b 三项的 FAIL 档（core_scope 只认自我声明的版本）。
@@ -178,6 +257,51 @@ def main():
           % (len(secs), '有' if '#### ⑦.5' in text else '无',
              len(re.findall(r'^#### \d+\.', seg12, re.M)),
              len(re.findall(r'^【[^】]+】', seg12, re.M))))
+    if slots:
+        print('  ⑥ 按计划生成 %d 个源码槽位（块身份 = 槽位 ID + 源路径 + sha256，不再靠 contains 猜）：' % len(slots))
+        for s in slots:
+            print('     %-28s %s %d-%d' % (s['slot'], s['src'], s['start'], s['end']))
+    if a.batch_json:
+        bj = a.batch_json if os.path.isabs(a.batch_json) else os.path.join(os.path.abspath(a.src), a.batch_json)
+        os.makedirs(os.path.dirname(bj), exist_ok=True)
+        # 槽位 ID 必须同时存在于**骨架**与**注释计划**里，否则注入器两边对不上。
+        # 计划是注释的唯一来源，所以这里把解析出的 slot/行段写回一份 annotations.json（派生产物，
+        # 与骨架同一次生成直接对应；原始计划文件不动）。
+        ann = {"schema_version": 1, "from": os.path.abspath(a.plan), "blocks": []}
+        by_seg = {s["seg"]: s for s in slots}
+        for n, spec in enumerate(plan.get("blocks", []), 1):
+            seg = spec.get("seg") or ("6.%d" % n)
+            s = by_seg.get(seg, {})
+            item = dict(spec)
+            item.pop("seg", None)
+            item["src"] = spec["src"]
+            item["start"] = s.get("start")
+            item["end"] = s.get("end")
+            item["lang"] = spec.get("lang", "java")
+            item["slot"] = s.get("slot")
+            ann["blocks"].append(item)
+        ann_path = os.path.join(os.path.dirname(bj), "annotations.json")
+        io.open(ann_path, 'w', encoding='utf-8', newline='').write(
+            json.dumps(ann, ensure_ascii=False, indent=1) + '\n')
+        state = {
+            "schema_version": 1,
+            "batch_id": "stage%s-b%s" % (a.stage, a.batch),
+            "title": a.title,
+            "src": os.path.abspath(a.src),
+            "skeleton": out,
+            "parts_dir": a.parts_dir or os.path.join(os.path.dirname(out), 'parts'),
+            "annotations": ann_path,
+            "plan_source": os.path.abspath(a.plan) if a.plan else None,
+            "manifest": os.path.abspath(a.manifest) if a.manifest else None,
+            "out": out,
+            "slots": slots,
+            "contract_version": GATE_VERSION,
+        }
+        io.open(bj, 'w', encoding='utf-8', newline='').write(
+            json.dumps(state, ensure_ascii=False, indent=1) + '\n')
+        print('  批次状态已写 %s（注释计划含槽位：%s）' % (bj, ann_path))
+        print('  下一步：写分片到 %s → python scripts/batch_build.py --batch %s'
+              % (state["parts_dir"], bj))
     print('  已从文件里剥离 %d 行模板指导语（写作须知，见下）——它们留在文件里会让 ⓪ 的自指检查 FAIL'
           % len(notes))
     for l in notes:

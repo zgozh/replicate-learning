@@ -100,6 +100,8 @@ def scan(lecture, threshold=8):
 
 
 def main():
+    from lecture_checks import configure_stdio      # stdout 被重定向时按 GBK 编码会崩在打印上
+    configure_stdio()
     ap = argparse.ArgumentParser(description='③ 注释密度缺口定位（只报告）')
     ap.add_argument('lecture')
     ap.add_argument('--src', default=os.getcwd())

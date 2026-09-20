@@ -359,7 +359,7 @@ def extract_slots(text_or_path):
     text = io.open(text_or_path, encoding="utf-8").read() if os.path.isfile(text_or_path) else text_or_path
     out = []
     for m in SLOT_RE.finditer(text):
-        attrs = dict(re.findall(r'([a-zA-Z_]+)="([^"]*)"', m.group(1)))
+        attrs = dict(re.findall(r'([a-zA-Z_][a-zA-Z0-9_]*)="([^"]*)"', m.group(1)))
         attrs["at"] = text[:m.start()].count("\n") + 1
         out.append(attrs)
     return out
@@ -579,8 +579,7 @@ def scope_checklist():
 
 
 def main():
-    if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    LC.configure_stdio()                # stdout 被重定向时按 GBK 编码会崩在打印上
     ap = argparse.ArgumentParser(description="开批预检：注入/写作之前把机器能判的问题一次报出来")
     ap.add_argument("--src", required=True, help="宿主仓库根目录")
     ap.add_argument("--plan", required=True, help="注释计划 JSON（与 inject_source 同一个 plan）")

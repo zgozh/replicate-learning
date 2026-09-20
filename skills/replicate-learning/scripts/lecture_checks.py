@@ -21,6 +21,7 @@ import hashlib
 import io
 import json
 import os
+import sys
 
 SCHEMA_VERSION = 1
 
@@ -34,6 +35,29 @@ BLOCKING = (FAIL, ERROR)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SKILL_ROOT = os.path.dirname(HERE)
+
+
+def configure_stdio():
+    """把 stdout/stderr 固定成 UTF-8（errors=replace），**并返回是否成功**。
+
+    为什么工具必须先做这一步（2026-09-20 实测缺陷）：这些脚本的正文里到处是 ⓪①②…★ 与中文，
+    而 Windows 的默认代码页是 GBK。一旦 stdout 被**重定向到文件或管道**（`> log.txt`、
+    `subprocess.run(capture_output=True)`、CI 采集），Python 会按 cp936 编码，遇到 ⑫（\\u246b）
+    直接 `UnicodeEncodeError` **崩在打印上**——实测 `gate_lecture.py` 正是这样崩的，
+    而第48批的会话里它是靠 `| grep` 管道用的：换成任何采集式调用就会整批卡住。
+    修法是每个 CLI 入口先调本函数（不是靠人记得设 PYTHONIOENCODING）。
+    """
+    ok = True
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            ok = False
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (ValueError, OSError):
+            ok = False
+    return ok
 
 # ── 规则登记表：检查组 → SSOT 条款 ID ────────────────────────────────────────
 # 口径：ID 一律取自 `spec/00-质量契约.json`，不在本文件另立一套编号。

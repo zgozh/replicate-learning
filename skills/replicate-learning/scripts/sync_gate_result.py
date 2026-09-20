@@ -110,6 +110,8 @@ def render(lec, r):
 
 
 def main():
+    from lecture_checks import configure_stdio      # stdout 被重定向时按 GBK 编码会崩在打印上
+    configure_stdio()
     ap = argparse.ArgumentParser(description='把闸门实跑结果写进 ⑯ 段')
     ap.add_argument('lecture')
     ap.add_argument('--src', default=os.getcwd())
