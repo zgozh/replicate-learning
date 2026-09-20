@@ -433,6 +433,11 @@ python tests/e2e_scripted_run.py         # 26 步期望全中（+9 步：4 条�
 > 上一轮（§10）里的 `a086afd` 是你自己提交的闸门清单路径修复（`_manifest_path_for`）——本轮在其之上继续，
 > 未回退它。另：`.gitignore` 补了 `test2.md`（与 `test.md` 同类会话素材），未改动任何已跟踪文件的内容。
 
+**§13 之后的再同步（同一轮复查）**：源仓提交 `fd1d3a8`（已推送 `572fb35..fd1d3a8`），
+dsh-toolkit 快照提交 `c701e47`（已推送 `origin/main`）；WorkBuddy / Codex / `~/.agents/skills` 三处覆盖，
+四处仍是 **100 个文件逐文件 SHA256 零差异**，安装位实跑 `skill_selfcheck` **113 项 0 失败 → PASS ✅**、
+`v2_selfcheck` PASS。
+
 ## 13. 版本门第二次收紧：声明不被后续说明覆盖（2026-09-20 复查）
 
 ### 13.1 复查发现的口子
