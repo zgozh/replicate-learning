@@ -36,6 +36,8 @@ plan.json 结构：
   - 写入 tmpnew → 三道校验（行数未骤降 / 围栏配对无问题 / 注入内容确实落盘）→ `os.replace`。
 """
 import argparse
+import io
+import tokenize
 import json
 import os
 import re
@@ -71,6 +73,27 @@ def anno_prefix(lang):
 def read_lines(path):
     with open(path, encoding="utf-8") as f:
         return f.read().split("\n")
+
+
+def python_string_lines(lines):
+    """Return source lines inside multiline Python strings (including docstrings)."""
+    protected = set()
+    fstring_start = None
+    try:
+        tokens = tokenize.generate_tokens(io.StringIO("\n".join(lines)).readline)
+        for token in tokens:
+            if token.type == tokenize.STRING and token.end[0] > token.start[0]:
+                protected.update(range(token.start[0], token.end[0] + 1))
+            elif token.type == getattr(tokenize, "FSTRING_START", -1):
+                fstring_start = token.start[0]
+            elif token.type == getattr(tokenize, "FSTRING_END", -1) and fstring_start is not None:
+                if token.end[0] > fstring_start:
+                    protected.update(range(fstring_start, token.end[0] + 1))
+                fstring_start = None
+    except (tokenize.TokenError, IndentationError, SyntaxError):
+        # An incomplete source file can still be quoted faithfully; omit inline notes.
+        return set(range(1, len(lines) + 1))
+    return protected
 
 
 def parse(path):
@@ -124,6 +147,7 @@ def build_block(src_root, rel, a, b, anno_in, lang):
     while body and body[-1].strip() == "":
         body.pop()
     prefix = anno_prefix(lang)
+    protected = python_string_lines(lines) if (lang or "").lower() in {"python", "py"} else set()
     out, skipped = [], 0
     for off, ln in enumerate(body):
         no = a + off
@@ -135,7 +159,7 @@ def build_block(src_root, rel, a, b, anno_in, lang):
         # ② 行尾是反斜杠续行（shell/bash/ts 的常见写法）：bash **先处理续行再处理注释**，
         #    追加任何字符都会让续行断裂、改变语义（实测 serve.sh 有 12 行、dev-entrypoint.sh 有 10 行）。
         # 这两种行仍然**逐字注入**（保真不受影响），只是不带行号标注与教材注释。
-        if prefix is None or ln.rstrip().endswith("\\"):
+        if prefix is None or ln.rstrip().endswith("\\") or no in protected:
             out.append(ln)
             skipped += 1
             continue
@@ -143,7 +167,7 @@ def build_block(src_root, rel, a, b, anno_in, lang):
         out.append("%s  %s :L%d  ←教材：%s" % (ln, prefix, no, note) if note
                    else "%s  %s :L%d" % (ln, prefix, no))
     if skipped:
-        print("   ℹ %s：%d 行不做内联标注（该语言不支持行尾注释，或行尾是反斜杠续行）" % (rel, skipped))
+        print("   [INFO] %s：%d 行不做内联标注（语言限制、反斜杠续行或 Python 多行字符串）" % (rel, skipped))
     return ["```" + lang] + out + ["```"], [(rel, a + off, ln) for off, ln in enumerate(body)]
 
 

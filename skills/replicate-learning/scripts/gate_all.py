@@ -46,6 +46,9 @@ def check_gate_api():
 
 def reset_snap(sha):
     if sha:
+        if G.SNAPSHOT == sha and G.SNAP_TAR is not None:
+            return
+        G._snap_file_cache.clear()
         G.load_snapshot(sha)
     else:
         G.SNAPSHOT = G.SNAP_TAR = G.SNAP_UNION = None

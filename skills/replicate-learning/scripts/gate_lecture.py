@@ -551,12 +551,18 @@ def attribute(code, classes, by_class, rev):
     return best
 
 
+_SRC_CODE_SET_CACHE = {}
+
+
 def src_code_set(path):
+    if path in _SRC_CODE_SET_CACHE:
+        return _SRC_CODE_SET_CACHE[path]
     s = set()
     for l in open(path, encoding="utf-8", errors="replace").read().split("\n"):
         n = norm_code(l)
         if n and not CMT_LINE.match(n):
             s.add(n)
+    _SRC_CODE_SET_CACHE[path] = s
     return s
 
 

@@ -144,7 +144,7 @@ def main():
     # 2.19：在 ⑯ 标题后写明判据版本 —— 新批从第一次跑闸门就落在 ⓪b 三项的 FAIL 档（core_scope 只认自我声明的版本）。
     _lt = text.split('\n')
     _i16 = next(i for i, l in enumerate(_lt) if re.match(r'^##\s*' + CIRCLED[15] + r'\s', l))
-    _lt[_i16 + 1:_i16 + 1] = ['', '**判据版本：v%s**（本批按此版判据验收；判据变更见 SKILL §6.6 变更登记）。' % GATE_VERSION]
+    _lt[_i16 + 1:_i16 + 1] = ['', '**判据版本：v%s**（本批按此版判据验收；判据变更见 references/第一册质量细则.md §6.6 变更登记）。' % GATE_VERSION]
     text = '\n'.join(_lt)
 
     # 生成后自断言（判据 2.15 / 血证 H25）：17 个一级节标题必须全部按规范形态命中——

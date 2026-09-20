@@ -36,7 +36,15 @@ GATE_API = ['USE_MARKS', 'WIRE_MARKS', 'IO_MARKS']
 
 def read(rel):
     p = os.path.join(ROOT, rel)
-    return io.open(p, encoding='utf-8').read() if os.path.isfile(p) else None
+    if not os.path.isfile(p):
+        return None
+    text = io.open(p, encoding='utf-8').read()
+    if rel == 'SKILL.md':
+        # The short entry routes execution; the preserved detail still carries
+        # the existing SSOT anchors and section definitions.
+        detail = os.path.join(ROOT, 'references', '第一册质量细则.md')
+        text += '\n' + io.open(detail, encoding='utf-8').read()
+    return text
 
 
 def scan_files():
@@ -256,7 +264,7 @@ def check_tools(r):
     specdir = os.path.join(ROOT, 'spec')
     for fn in sorted(os.listdir(specdir)):
         docs.append(('spec/' + fn, read('spec/' + fn) or ''))
-    tools = [fn for fn in sorted(os.listdir(HERE)) if fn.endswith('.py')]
+    tools = [fn for fn in sorted(os.listdir(HERE)) if fn.endswith('.py') and not fn.startswith('test_')]
     orphan = [fn for fn in tools if not any(fn in t for _n, t in docs)]
     if orphan:
         r.fail('scripts/ 下有工具没被任何文档引用（有工具没人知道 = 等于没有）：%s' % '、'.join(orphan))

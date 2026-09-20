@@ -9,10 +9,10 @@
 ## 怎么改（顺序不能反）
 
 1. **改 `00-质量契约.json`**：加/改条目（`stmt` 写判据原文，`doc` 写"必须能在 SKILL.md 里找到的原文锚点"）。
-2. **同步三处投影**：`SKILL.md` 正文、`references/批次讲解全文模板.md` 骨架、`scripts/gate_lecture.py` 判定。
-3. **跑 `python scripts/skill_selfcheck.py`**：它会对账 SSOT↔SKILL↔模板↔gate，并把"SSOT 有、SKILL 里找不到"的条目直接报出来（防规则丢失）。
-4. **判据有变**则按 `SKILL §6.6` 三件套：递增 `GATE_VERSION` → §6.6 登记 → 回归集判定不变 → 公告与存量工单。
-5. **同步四处副本并 commit+push**（见 SKILL §6.6 的 DoD 与 AGENTS.md）。
+2. **同步三处投影**：`references/第一册质量细则.md` 正文、`references/批次讲解全文模板.md` 骨架、`scripts/gate_lecture.py` 判定。
+3. **跑 `python scripts/skill_selfcheck.py`**：它会对账 SSOT↔质量细则↔模板↔gate，并把缺失条目直接报出来。
+4. **判据有变**则按 `references/第一册质量细则.md` §6.6 三件套：递增 `GATE_VERSION` → 登记 → 回归集判定不变 → 公告与存量工单。
+5. **同步仓库与实际安装副本并 commit**（见质量细则 §6.6 的 DoD）。
 
 ## 层级说明（为什么分 L1/L2/L3）
 
