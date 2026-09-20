@@ -1,0 +1,38 @@
+{
+ "source": "ragent-official 批次48 会话导出（test.md）中注入后首跑闸门的实跑输出",
+ "signature_gaps": {
+  "block": "6.8 TableChunker★",
+  "methods": [
+   "appendRow",
+   "sanitizeCell",
+   "appendSeparator"
+  ]
+ },
+ "density_runs": [
+  {
+   "item": "6.3 ParagraphChunker",
+   "max_run": 8
+  },
+  {
+   "item": "6.4 CodeChunker",
+   "max_run": 10
+  },
+  {
+   "item": "6.5 ListChunker",
+   "max_run": 10
+  },
+  {
+   "item": "6.6 ImageChunker",
+   "max_run": 8
+  },
+  {
+   "item": "6.8 TableChunker★",
+   "max_run": 10
+  }
+ ],
+ "note": "闸门口径：无中文注释的关键行连段 ≥8 即 FAIL（契约 D1）。修复后的计划（*_fixed）应零缺口。",
+ "plan_anno_counts": {
+  "7123": 113
+ },
+ "first_round_plan_annos": 113
+}

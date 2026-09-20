@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "source_root": ".",
+  "source_revision": "16984b95454d3fc2a55b60ade1950fefeba339ec",
+  "note": "source_root 由 D:\\ragent-official 改写为 '.'（夹具是拷贝，根目录结构镜像 ragent）；清单键补回 `rag/` 前缀，使清单与注释计划的 src 用同一个根；source_revision 保留原批次声明",
+  "files": {
+    "rag/src/main/java/com/nageoffer/ai/ragent/core/chunk/blockaware/CodeChunker.java": {
+      "sha256": "79cd2c5a1a54a724c61b0f00654cd27d7da8a536e9617195985ab48d80c61739",
+      "bytes": 3638
+    },
+    "rag/src/main/java/com/nageoffer/ai/ragent/core/chunk/blockaware/HeadingChunker.java": {
+      "sha256": "8ada159db6551acb8d1bbf03e715582b354199835fc64186e2661b70eb526bbe",
+      "bytes": 2417
+    },
+    "rag/src/main/java/com/nageoffer/ai/ragent/core/chunk/blockaware/HeadingHandler.java": {
+      "sha256": "13283850f0dfa093fa20cec3416c692260e1df76622f9c784b901a8162f0df1a",
+      "bytes": 2766
+    },
+    "rag/src/main/java/com/nageoffer/ai/ragent/core/chunk/blockaware/HtmlTableChunker.java": {
+      "sha256": "42c4a53d3a951ac9fd50b40b4137a51eb67c5ed8ea370cb0ebbab546a8db4eff",
+      "bytes": 5327
+    },
+    "rag/src/main/java/com/nageoffer/ai/ragent/core/chunk/blockaware/ImageChunker.java": {
+      "sha256": "90ce02d1d56670d6f753bb3c24ac66a17766164710c0106706b15686fd07e4e6",
+      "bytes": 2917
+    },
+    "rag/src/main/java/com/nageoffer/ai/ragent/core/chunk/blockaware/ListChunker.java": {
+      "sha256": "bfee8f606100912d60871e5ea267b0b162c389db070b3f02ee6a997aff052f83",
+      "bytes": 4387
+    },
+    "rag/src/main/java/com/nageoffer/ai/ragent/core/chunk/blockaware/ParagraphChunker.java": {
+      "sha256": "2a9943216a5e01cb513f5c60d1160c19583fe4da445d7b2abba82380da549d6b",
+      "bytes": 2808
+    },
+    "rag/src/main/java/com/nageoffer/ai/ragent/core/chunk/blockaware/TableChunker.java": {
+      "sha256": "90d042e8a67d1dda17bbe7165a71dfe16308b1fbff360fa7bfd4292034fce1e1",
+      "bytes": 7564
+    }
+  }
+}

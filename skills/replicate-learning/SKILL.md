@@ -25,6 +25,7 @@ description: 当用户要学习、逐批讲解或继续拆解本地或开源项�
 
 ## 每批只走这一条路径
 
+0. **计时**：开批先 `python scripts/batch_trace.py --file <批次目录>/trace.jsonl start --batch-id <本批号>`，各步用 `begin/end --phase prepare|investigate|write|inject|repair|gate|verify|publish` 记分步耗时，收尾 `report` 汇总。**只有脚本跑得出的耗时才算实测**；模型写作耗时由操作者按秒表并写明口径，没测就写"未实测"——不要从会话时间戳反推，也不要预报降幅。
 1. **定位**：读取被学习项目的 `AGENTS.md`、精简状态、覆盖矩阵和源码变化。首次运行才完成全库文件清单及系统地图；之后只增量更新。范围包含 Java、Python 及实际使用的配置、测试、脚本等文件；不要以语言划分教学深度。
 2. **备证据**：批量读取本批源码、真实调用方和相关测试，记录源码版本或脏工作树文件hash。用 `scripts/batch_manifest.py prepare` 生成本批文件清单，再生成骨架。阅读样例只取匹配本批语言与难点的短节；门禁指出特定缺陷才读对应事故与细则。
 3. **开批**：用 `scripts/new_batch.py` 从模板生成17节骨架；起笔就按当前完整判据版本写。用 `scripts/inject_source.py` 从真实源码注入代码和真实行号，教学解释另存注释计划。AI写因果、边界、回放和真实项目的AI协作示例，不手抄源码。

@@ -1,0 +1,191 @@
+{
+ "blocks": [
+  {
+   "anchor": "#### 6.1 `HeadingHandler`",
+   "contains": "// __INJECT_01__",
+   "lang": "java",
+   "src": "rag/src/main/java/com/nageoffer/ai/ragent/core/chunk/blockaware/HeadingHandler.java",
+   "anno": {
+    "27": "无状态：摄取并发共用同一实例，路径由调用方持有并逐块传入",
+    "37": "levels 必须与 path 一起存（注释自答）：只看路径深度无法判断新标题挂哪级——不以 H1 开头的文档会把同级章节层层嵌套",
+    "39": "Outline record 两字段同长：path 给人看、levels 供弹栈比较",
+    "41": "EMPTY 哨兵：路径累积从空起（调度器 :L74 的起点）",
+    "43": "紧凑构造器防御拷贝：与批次47 ChunkContext 同款纪律",
+    "50": "update 契约：入参与返回值都不可变——函数式更新",
+    "53": "current null 归 EMPTY：防御调用方首块前未初始化",
+    "57": "级别钳到 ≥1：解析器可能给 0 或负——Math.max 一行兜住",
+    "59": "弹栈注释自答：真正的父级是最近一个级别更小的标题",
+    "61": ">= level 全弹出：同级与更深的祖先都出栈——同级标题不嵌套",
+    "65": "subList(0,keep) 重建：不可变对象的修改是造新的，绝不原地改",
+    "67": "null 文本落空串：标题文本缺失不炸路径",
+    "69": "返回新 Outline：入参出参皆不可变"
+   }
+  },
+  {
+   "anchor": "#### 6.2 `HeadingChunker`",
+   "contains": "// __INJECT_02__",
+   "lang": "java",
+   "src": "rag/src/main/java/com/nageoffer/ai/ragent/core/chunk/blockaware/HeadingChunker.java",
+   "anno": {
+    "31": "标题不产块的话 content 就是被剥掉全部结构的裸正文（javadoc 自答）",
+    "32": "井号数取原始级别，不按路径深度重算——路径深度是切片产物不是文档事实",
+    "37": "MAX_LEVEL=6：markdown 井号上限——钳位常量收在类头",
+    "40": "blockType 注册键：HeadingBlock.class——调度器建表的 key",
+    "46": "空守卫：无文本标题 List.of()——无产出合法（接口契约）",
+    "49": "strip：标题两侧空白不入块",
+    "51": "outlinePath 来自 ctx：调度器已先 update——标题拿到含自己在内的路径",
+    "55": "级别钳位 [1,6]：解析器给的级别可能越界",
+    "56": "向量文本不带井号：markdown 标记对嵌入模型是零信息 token",
+    "57": "ofHeading 标记：打包阶段起一节的唯一依据"
+   }
+  },
+  {
+   "anchor": "#### 6.3 `ParagraphChunker`",
+   "contains": "// __INJECT_03__",
+   "lang": "java",
+   "src": "rag/src/main/java/com/nageoffer/ai/ragent/core/chunk/blockaware/ParagraphChunker.java",
+   "anno": {
+    "30": "优先整段保留，超出容忍上限才按块大小降级切分",
+    "32": "切分一律委托 TextSplitter：边界回溯与归一化在收口批，本类不自行按下标截断",
+    "45": "null 守卫：空产出",
+    "48": "overlap 从预算取：兼任 TextSplitter 回退找句末标点的最大距离（批次47 :L95）",
+    "49": "第一量注释自答：先按容忍上限量一次，切不动说明整段撑得住",
+    "40": "blockType 注册键：ParagraphBlock.class——调度器建表的 key",
+    "51": "量出多片才退回 maxChars 重切——顺序不能反：先按 maxChars 会把撑得住但超目标的段提前切碎",
+    "54": "空切分 List.of()：空段落合法无产出",
+    "58": "元数据：每片共享同一不可变对象",
+    "65": "of：段落无显式检索正文——回落 content（effectiveBody 语义）",
+    "67": "pieces 标记：多片必标——合并不得撤销契约的产出方落地"
+   }
+  },
+  {
+   "anchor": "#### 6.4 `CodeChunker`",
+   "contains": "// __INJECT_04__",
+   "lang": "java",
+   "src": "rag/src/main/java/com/nageoffer/ai/ragent/core/chunk/blockaware/CodeChunker.java",
+   "anno": {
+    "29": "优先整块保留，超出容忍上限才按行边界降级切分，每块重复围栏",
+    "31": "默认不切的理由（javadoc 自答）：半截行与缺失围栏破坏渲染与理解；但单块顶穿嵌入上限会被静默截断=尾部没入库",
+    "39": "blockType 注册键：CodeBlock.class——调度器建表的 key",
+    "47": "language null 落空串：无语言围栏合法",
+    "55": "统一判据落点：整块撑得住 toleranceChars 就不切",
+    "57": "超出才按 maxChars 行边界降级——度量不含围栏（先切裸代码再包围栏）",
+    "61": "每块重复围栏：半块代码也是合法 markdown——前端预览与 LLM 回填直接可用",
+    "62": "向量文本取裸代码：围栏与语言标签对嵌入是零信息 token",
+    "64": "pieces 标记：切片不可撤销",
+    "68": "按行累加切分：单行超预算整行独立成块，绝不从行中间切断（javadoc 自答）",
+    "74": "addition 含项间换行 1：行间换行也占预算",
+    "75": "超预算先落块再 setLength(0)：复用 StringBuilder 免新建",
+    "79": "非首行先补换行：块内行间保真",
+    "87": "segments 空给 List.of(code)：防御空 code 路径"
+   }
+  },
+  {
+   "anchor": "#### 6.5 `ListChunker`",
+   "contains": "// __INJECT_05__",
+   "lang": "java",
+   "src": "rag/src/main/java/com/nageoffer/ai/ragent/core/chunk/blockaware/ListChunker.java",
+   "anno": {
+    "29": "按渲染后的字符体量贪心分组，绝不从项中间切断",
+    "31": "度量取字符不取项数（javadoc 自答）：按项数切开的组会被打包器原样并回来，只在正文留多余空行",
+    "44": "空清单/null items List.of()",
+    "39": "blockType 注册键：ListBlock.class——调度器建表的 key",
+    "48": "元数据：各组共享同一不可变对象",
+    "53": "整份撑得住容忍就不切（注释自答）：切开后「要交哪些材料」这类问题只能召回半份",
+    "54": "budget 选型：整份渲染体量 ≤ 容忍 → 容忍值；否则 maxChars——Math.max(1,…) 防御 0 预算",
+    "62": "itemCost=渲染后体量+1（项间换行）——度量与产出同源（renderItem 复用）",
+    "63": "非首项才判超：单项自身超预算独立成块——硬切只会把词条腰斩",
+    "64": "subList 落块：startNumber 传 start+1——有序列表切块编号连续",
+    "70": "尾组收块：循环后剩余项必落",
+    "71": "pieces 标记：贪心分组不可撤销",
+    "84": "renderItem 逐项追加：startNumber+i 连号续编——有序切块编号不断档",
+    "75": "startNumber 仅对有序列表生效：本块起始编号",
+    "92": "renderedLength：整份体量含换行——budget 选型的输入",
+    "105": "renderItem：有序 N. / 无序 - ——渲染形态同时是切分度量"
+   }
+  },
+  {
+   "anchor": "#### 6.6 `ImageChunker`",
+   "contains": "// __INJECT_06__",
+   "lang": "java",
+   "src": "rag/src/main/java/com/nageoffer/ai/ragent/core/chunk/blockaware/ImageChunker.java",
+   "anno": {
+    "29": "一图一块：展示文本=描述+markdown 链接，向量文本只取描述",
+    "31": "URL 进向量是纯噪声（javadoc 自答）：只在无描述时才回落到链接本身",
+    "32": "可流动声明：让图与前导语/解释文字同块，检索命中即带图——打包阶段语义",
+    "39": "blockType 注册键：ImageBlock.class——调度器建表的 key",
+    "44": "null 块/无 asset List.of()：无资产图无产出",
+    "48": "markdown 图链接：URL 是解析域换好的公开地址",
+    "51": "blank 与 null 同等：解析域空描述不入表→这里为 null",
+    "52": "content=描述+空行+markdown：展示文本完整（语义+可点链接）——整存整取",
+    "56": "assets 进元数据：多 sink 拿 URL 渲染缩略图/答案配图",
+    "60": "立碑兑现（向量侧）：三参 of——有描述给描述、无描述 null 回落；URL 恒不进向量——批次44/46 承诺在此对账",
+    "63": "pickCaption 三级回落：caption > altText > 空串——alt 位恒非 null"
+   }
+  },
+  {
+   "anchor": "#### 6.7 `HtmlTableChunker`",
+   "contains": "// __INJECT_07__",
+   "lang": "java",
+   "src": "rag/src/main/java/com/nageoffer/ai/ragent/core/chunk/blockaware/HtmlTableChunker.java",
+   "anno": {
+    "32": "按 tr 边界切分，每块重复表头行并包回完整 table",
+    "34": "不转管道表（javadoc 自答）：合并单元格与格内换行展开二维表必然失真——展示与检索用同一份 HTML",
+    "39": "ROW 正则三要素：词边界防 <trXYZ>、DOTALL 让点匹配换行、非贪婪让每个 </tr> 结束当前匹配",
+    "44": "colspan/rowspan=1 不表达任何合并（javadoc 自答）：MinerU 逐格都写，十来行的表被撑到三倍",
+    "45": "NO_OP_SPAN 正则：清洗噪声在切分前——否则体量度量与产出恒差一截",
+    "57": "空守卫：hasText 判 HTML",
+    "65": "清洗执行：replaceAll 一次到位",
+    "67": "立碑兑现（守门判定）：只有表头或扫不出行——没有可切边界，原样落块，宁可超预算也不切在标签中间",
+    "72": "openTag 取原始开标签：作者写的 border/class 跟着每块走",
+    "73": "header=首 tr：每块重复的表头行",
+    "74": "maxRows：rowsPerChunk 硬上限（预算的 per-类型旋钮）",
+    "76": "整表撑得住容忍就不切（注释自答）：切开后每块虽重带表头，跨块的行间对比仍然做不了",
+    "80": "overhead 先扣（注释自答）：外壳+表头每块重复，不扣则渲染必超",
+    "87": "overBudget 非空才判：保证每块至少一行",
+    "89": "render 包回完整 table：每块独立合法 HTML",
+    "97": "pieces 标记",
+    "103": "splitRows：Matcher.find 循环收 tr 序列——首个即表头",
+    "115": "openTag 实现：indexOf('>') 取首标签全貌，找不到给默认 <table>",
+    "125": "TABLE_CLOSE 收尾：每块独立闭合"
+   }
+  },
+  {
+   "anchor": "#### 6.8 `TableChunker★`",
+   "contains": "// __INJECT_08__",
+   "lang": "java",
+   "src": "rag/src/main/java/com/nageoffer/ai/ragent/core/chunk/blockaware/TableChunker.java",
+   "anno": {
+    "29": "按 KV 渲染长度累加到预算，每块带完整表头，单行超预算整行原子成块",
+    "31": "rowsPerChunk 只作硬上限（javadoc 自答）：兼顾宽表不超嵌入上限、窄表不过度碎片化",
+    "32": "向量文本改用 列名: 值：markdown 表格靠位置对齐列名与值、嵌入模型读不懂位置",
+    "33": "表头不拼进向量（javadoc 自答）：重复前缀把同表各块向量朝同方向拉、压缩块间距离——表身份由 sheet 名经章节路径承载",
+    "41": "blockType 注册键：TableBlock.class——调度器建表的 key",
+    "49": "headers/rows null 防御",
+    "51": "双空才空产出：只无行有表头仍产块",
+    "55": "预算只量 KV 行本身（注释自答）：刻意不扣装配器追加的章节路径前缀——真去扣，深层章节可用预算逼近 0，退化成每行一块、大半是逐字相同的前缀",
+    "57": "maxRows：rowsPerChunk 硬上限",
+    "59": "整表撑得住容忍就不切：切开后跨块行间对比做不了（与 HTML 表同款注释）",
+    "66": "无行有表头：单块落表头——空数据表也入库",
+    "71": "贪心累加注释：超硬上限或加入下一行超预算先落块",
+    "75": "rowCost=KV 行渲染长度：切分度量与检索正文同源——量什么切什么",
+    "77": "overBudget 非空才判：行是原子单元",
+    "87": "pieces 标记",
+    "95": "章节路径由装配器统一拼（注释）：此处只给 KV 正文避免重复前缀",
+    "96": "双形态落点：第一参 markdown 表格（展示）、第二参 KV 行（向量）——本批核心讲点",
+    "103": "空行跳过：整行空不产 KV",
+    "143": "renderMarkdownTable 签名：展示文本组装——表头行+分隔行+数据行",
+    "156": "appendRow 签名：单行拼装——首尾竖线包边、格间 ' |' 分隔",
+    "170": "sanitizeCell 签名：清洗入口——竖线转义+格内换行压 <br>",
+    "177": "appendSeparator 签名：---| 重复列数的 markdown 分隔行",
+    "124": "列号超表头给空 key：宽容错位数据",
+    "129": "key 非空才拼 列名: ——防 ': 值' 半截形态",
+    "137": "oneLine 理由（注释自答）：key 与 value 之间夹断行影响检索",
+    "167": "格内换行（Excel Alt+Enter）转 <br>（javadoc 自答）：裸换行截断表格行、整块退化成普通段落",
+    "168": "竖线转义：cell 内字面 | 会被误判为列分隔",
+    "179": "分隔行 repeat 列数：markdown 表格语法",
+    "150": "尾换行剥除：块尾干净"
+   }
+  }
+ ]
+}
