@@ -1193,25 +1193,38 @@ R3_MARKS = ("未完成", "草稿", "进行中")
 _DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
-# ── 判据版本的**唯一识别口径**（2.30 修复 · 血证 H27 家族） ─────────────────────
-# `⑯` 的规范版本字段是 `**判据版本：v2.30**`；盖章表头写的是 `判据 v2.30`——**同一件事的两种形态**。
-# 曾经 `style_scope()` 自带一个只认后者的正则，于是**同一份正文首跑判"报告档"、盖章后升 FAIL 档**：
-# 批次49 实录（G-BATCH3 ⓪f 盖章前 REPORT、盖章后 FAIL）导致"盖章前 PASS、盖章后失败"的反复排查。
-# "判据只在它能识别的形态上生效 = 最大的绕过口"（H27）——所以版本门只留**这一个来源**：
-# `⑯` 段里的版本字段；字段写不出来时才退回宽松 `vX.Y`。core/form/snip/style 四个门全部走它。
-VER_FIELD_RE = re.compile(r"判据\s*(?:版\s*本)?\s*[:：]?\s*v?(\d+\.\d+)")
-VER_LOOSE_RE = re.compile(r"\bv(\d+\.\d+)\b")
+# ── 判据版本的**唯一识别口径**（2.30 修复，二次收紧） ──────────────────────────
+# `⑯` 的**规范版本字段**是 `**判据版本：v2.30**`（`new_batch.py` 落笔即写、`sync_gate_result.py` 盖章时刷新）；
+# 盖章表头 `**七组闸门实测**（判据 v2.30…）` 是另一种形态。判据只在它能识别的形态上生效 = 最大的绕过口（H27），
+# 所以版本门只有一个来源，且**只认规范字段**，表头/旧写法只在字段缺失时兜底。core/form/snip/style 四门全走它。
+#
+# 两次实录（同一处病、两个面）：
+#   ① 批次49 首跑——`style_scope` 只认表头「判据 vX.Y」，认不出规范字段 → 首跑报告档、盖章后升 FAIL 档，
+#      同一份正文"盖章前 PASS、盖章后失败"；
+#   ② 批次49 复查——修好①后仍是"取版本列表的**最后一个**"，于是在规范声明后补一句
+#      「历史判据 v2.17 仅供对照」，同一处 ⑦ 结构缺口就从 FAIL 档降回报告档（rc 1 → 0）。
+#      **声明就是声明，后面的说明文字不得覆盖它** → 三个优先级都只取**第一个**匹配。
+VER_DECL_RE = re.compile(r"^[^\w\n]*判据版本\s*[:：]?\s*v?(\d+\.\d+)", re.M)   # ① 规范字段（行首声明）
+VER_HDR_RE = re.compile(r"判据\s*v?(\d+\.\d+)")                               # ② 盖章表头 / 旧写法
+VER_ANY_RE = re.compile(r"\bv(\d+\.\d+)\b")                                   # ③ 最宽兜底
 
 
 def find_versions(txt):
-    """按「规范版本字段优先、宽松 vX.Y 兜底」取版本号列表（可能为空）。"""
-    return VER_FIELD_RE.findall(txt) or VER_LOOSE_RE.findall(txt)
+    """按「规范字段 → 盖章表头/旧写法 → 任意 vX.Y」的优先级取版本号，**每级只取第一个**。
+
+    返回列表（0 或 1 个元素）：保留列表形态是为兼容既有调用（`vs[-1]`）。
+    """
+    for pat in (VER_DECL_RE, VER_HDR_RE, VER_ANY_RE):
+        vs = pat.findall(txt)
+        if vs:
+            return vs[:1]
+    return []
 
 
 def declared_version(lines):
-    """全文里最后出现的判据版本（记录类文件没有 16 节，ver_marker 用不了）。"""
+    """文件里声明的判据版本（记录类文件没有 ⑯ 节，ver_marker 用不了）。"""
     vs = find_versions("\n".join(lines))
-    return vs[-1] if vs else None
+    return vs[0] if vs else None
 
 
 def declared_at_least(lines, ver):
@@ -2155,14 +2168,15 @@ def ver_marker(lines):
 
     两问分开的用意：**"从没标过"才是真缺陷**（⑯ 里的数字没人知道按哪版跑的，血证 H15 就是复述旧结论）；
     "标了但不是当前版"只是**提示复核**——判据每升一版就让所有旧标注变成"不达标"是跑步机，不是质量。
-    实测：78 份里 6 份写过版本；升到 2.10 后那 6 份也变"非当前版"——正说明两问必须分开。"""
+    实测：78 份里 6 份写过版本；升到 2.10 后那 6 份也变"非当前版"——正说明两问必须分开。
+    版本本身由 `find_versions()` 统一取（规范字段优先、只取第一个），不再"谁在后面谁说了算"。"""
     txt = "\n".join(lines)
     m = re.search(r"^## ⑯", txt, re.M)
     if not m:
         return False, None, False
     seg = txt[m.start():]
     vs = find_versions(seg)
-    return bool(vs), (vs[-1] if vs else None), GATE_VERSION in seg
+    return bool(vs), (vs[0] if vs else None), GATE_VERSION in seg
 
 
 CORE_FAIL_SINCE = "2.18"     # ⓪b 三项 FAIL 档的**适用起点**：只有自我声明判据版本 ≥ 本值的批次才从严

@@ -4,7 +4,7 @@
 > 默认交付**第一册项目源码与工程实现**；第二、三册需用户明确提出。每条源码结论都保留可复检的证据。
 
 [![判据版本](https://img.shields.io/badge/判据-v2.30-blue)](skills/replicate-learning/references/第一册质量细则.md)
-[![自检](https://img.shields.io/badge/selfcheck-112%20项%200%20失败-brightgreen)](skills/replicate-learning/scripts/skill_selfcheck.py)
+[![自检](https://img.shields.io/badge/selfcheck-113%20项%200%20失败-brightgreen)](skills/replicate-learning/scripts/skill_selfcheck.py)
 [![License](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE)
 
 ---
@@ -54,7 +54,7 @@
 | 常见做法 | 本 Skill |
 |---|---|
 | 让 AI "讲一下这个项目"，产出一段说明 | 默认逐批产出第一册；其他册按用户明确请求启用 |
-| 讲解质量靠"模型自觉" | **112 项技能自检 + 批次闸门**复检，保留人工语义审读 |
+| 讲解质量靠"模型自觉" | **113 项技能自检 + 批次闸门**复检，保留人工语义审读 |
 | 贴代码靠模型手打，行号经常是编的 | 代码块由 `inject_source.py` **从真实源码逐行注入**，行号零漂移；`④ 行号一致性`逐处核对 |
 | "已扫描"≈"已讲解"≈"已验证" | 三者严格区分，禁止互相冒充；没跑过的必须写"未实测" |
 | 讲完一个文件就算过 | `② ★反向完整度`：★ 类源文件的**每一条有效行**都要在讲解里出现 |
@@ -87,11 +87,11 @@ cp -r skills/replicate-learning ~/.agents/skills/
 
 ```bash
 cd ~/.workbuddy/skills/replicate-learning     # 换成你的实际安装路径
-python scripts/skill_selfcheck.py             # 期望：检查项 112，失败 0 → PASS ✅
+python scripts/skill_selfcheck.py             # 期望：检查项 113，失败 0 → PASS ✅
 python scripts/v2_selfcheck.py                # 期望：V2 self-check: PASS (6 contract entries)
 ```
 
-> 单元测试（可选，11 个 `test_*.py` 共 137 项）：
+> 单元测试（可选，11 个 `test_*.py` 共 143 项）：
 > `python -m unittest discover -s scripts -p "test_*.py" -t scripts`
 >
 > Windows 提示：若把工具输出重定向到文件却看到 `UnicodeEncodeError`，说明用的是旧版本脚本——
@@ -303,7 +303,7 @@ python scripts/batch_preflight.py --src <源码根> --plan <注释计划.json> [
 | **单一真源** | `spec/00-质量契约.json` | 每条要求 = id / 层级 / 判据原文 / gate 锚点 / SKILL 锚点 / 模板锚点 / 血证编号 |
 | **血证档案** | `spec/血证档案.md` | H1~H27：每条规则背后的真实事故。**想放宽判据前必读** |
 | **判据版本** | `references/第一册质量细则.md` §6.6 | 当前 **v2.30**；任何判据变更必须走三件套 |
-| **技能自检** | `scripts/skill_selfcheck.py` | 112 项，对账 SSOT ↔ 质量细则 ↔ 模板 ↔ gate，防规则丢失 |
+| **技能自检** | `scripts/skill_selfcheck.py` | 113 项，对账 SSOT ↔ 质量细则 ↔ 模板 ↔ gate，防规则丢失 |
 
 **判据变更三件套**（缺一即视为未完成）：
 
@@ -322,7 +322,7 @@ python scripts/batch_preflight.py --src <源码根> --plan <注释计划.json> [
 |---|---|
 | `gate_lecture.py` | 闸门：一次跑完七项判定，输出判据版本与缺口；`--json` 出**结构化结果**（稳定规则 ID / 状态 / 核验对象数 / 哈希）；`--manifest` 显式指定本批源码清单（供盖章核对） |
 | `gate_all.py` | 全库记分卡 + 判据回归比对（`--baseline` 逐字段比对，变化即 FAIL） |
-| `skill_selfcheck.py` | 技能文档一致性自检（SSOT ↔ 质量细则 ↔ 模板 ↔ gate 对账，112 项） |
+| `skill_selfcheck.py` | 技能文档一致性自检（SSOT ↔ 质量细则 ↔ 模板 ↔ gate 对账，113 项） |
 | `v2_selfcheck.py` | V2 入口与产物契约检查 |
 | `batch_trace.py` | 批次分步计时器（JSONL）：把"一小时到底花在哪"拆成准备/写作/注入/修复/终检/验证/归档 |
 | `batch_preflight.py` | **开批预检**：注入前就用闸门同口径报出 ★ 签名缺口、密度连段与可补注行、坏注释键；并要求清单**覆盖注释计划里的全部源文件**（缺件 FAIL） |

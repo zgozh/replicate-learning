@@ -21,6 +21,7 @@ import argparse
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -220,6 +221,42 @@ def main():
         mismatches.append('版本门档位不一致：首跑 %s ≠ 盖章后 %s' % (tier_pre, tier_post))
     phase('inject', lambda: run([tool('batch_build.py'), '--batch', state, '--check']),
           '盖章后重复构建：⑯ 机器块不参与比对', expect_out=['一致'])
+
+    # ── 负向（CLI）：规范声明之后的"历史版本"说明不得覆盖档位（批次49 复查实录）──
+    # 当时的复现：同一处 ⑦ 结构缺口，补一句「历史判据 v2.17 仅供对照」就把 rc=1 FAIL 档
+    # 变成 rc=0 报告档（退出码直接翻转）。现在声明是声明，后续说明文字一律不参与判定。
+    def with_gap(text, extra=None):
+        out = text.replace('不变式', '不变量', 1)          # 制造一处 ⑦ 结构缺口（⓪e E1）
+        if extra:
+            lines = out.split('\n')
+            ids = [k for k, l in enumerate(lines)
+                   if re.search(r'判据\s*(?:版\s*本)?\s*[:：]?\s*v?\d+\.\d+', l)]
+            k = ids[-1]                                    # 插在 ⑯ 里最后一处版本提及之后
+            lines[k + 1:k + 1] = ['', extra]
+            out = '\n'.join(lines)
+        return out
+
+    base = io.open(lec, encoding='utf-8').read()
+    gap_only = os.path.join(work, '批次48-gap.md')
+    gap_hist = os.path.join(work, '批次48-gap-history.md')
+    io.open(gap_only, 'w', encoding='utf-8', newline='').write(with_gap(base))
+    io.open(gap_hist, 'w', encoding='utf-8', newline='').write(
+        with_gap(base, '（历史判据 v2.17 仅供对照；本节数字仍按上面声明的那一版核对。）'))
+    _rc1, out_gap, _ = phase('gate', lambda: run([tool('gate_lecture.py'), gap_only, '--src', SRC48,
+                                                  '--manifest', MANIFEST]),
+                             '负向对照：⓪e 结构缺口 → FAIL 档', expect_rc=1, expect_out=['FAIL 档'])
+    _rc2, out_hist, _ = phase('gate', lambda: run([tool('gate_lecture.py'), gap_hist, '--src', SRC48,
+                                                   '--manifest', MANIFEST]),
+                              '负向：声明后补「历史判据 v2.17」不得降档', expect_rc=1,
+                              expect_out=['FAIL 档'])
+    ok = tiers(out_gap) == tiers(out_hist) and tiers(out_hist).get('⓪e') == 'FAIL 档'
+    steps.append(dict(phase='gate', rc=0 if ok else 1, ms=0.0,
+                      note='版本声明不被后续"历史版本"说明覆盖（CLI 负向：两份都必须 FAIL 档）',
+                      expect_rc=[0], expect_out=[], ok=ok,
+                      problems=[] if ok else ['带缺口 %s ｜ 加历史版本 %s' % (tiers(out_gap), tiers(out_hist))],
+                      head=''))
+    if not ok:
+        mismatches.append('历史版本说明改变了档位：%s vs %s' % (tiers(out_gap), tiers(out_hist)))
 
     # ── gate / verify / publish：有真实教材时跑完整闭环（在临时项目副本上盖章与发布）──
     if have_real:

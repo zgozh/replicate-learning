@@ -1338,6 +1338,14 @@ def check_structured_result(r):
             r.ok('版本门：⑯ 没写版本 → 报告档（存量不追溯），不会凭空判红')
         else:
             r.fail('⑯ 没写版本却拿到了版本号——版本门又出现了第二个来源')
+
+        # 第二次收紧：规范声明**之后的说明文字不得覆盖它**（批次49 复查实录——补一句
+        # "历史判据 v2.17 仅供对照"曾把同一处 ⑦ 缺口从 FAIL 档降回报告档，rc 1 → 0）
+        hist = pre + ['', '（历史判据 v2.17 仅供对照；本节数字仍按上面声明的那一版核对。）']
+        if G.style_scope(hist)[:3] == G.style_scope(pre)[:3] == (True, True, True):
+            r.ok('版本门：规范声明后补「历史判据 v2.17」不降档（声明不被后续说明覆盖）')
+        else:
+            r.fail('历史版本说明覆盖了声明：%s vs %s' % (G.style_scope(pre), G.style_scope(hist)))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

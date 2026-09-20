@@ -111,5 +111,63 @@ class OldRegexRegressionGuard(unittest.TestCase):
         self.assertEqual(re.findall(OldRegexRegressionGuard.OLD_RE, "\n".join(STAMPED)), ["2.30"])
 
 
+class DeclarationWinsTests(unittest.TestCase):
+    """② 第二次收紧：**声明就是声明，后面的说明文字不得覆盖它**（批次49 复查实录）。
+
+    第一版修复（认得出规范字段）之后仍留着一个口子：`find_versions` 返回 ⑯ 里的**全部**版本号，
+    而 `ver_marker` 取**最后一个**。于是在规范声明后面补一句
+    「历史判据 v2.17 仅供对照」，同一处 ⑦ 结构缺口就从 `rc=1` FAIL 档变成 `rc=0` 报告档（实测）。
+    现在三级优先级**每级只取第一个**：规范字段 → 盖章表头/旧写法 → 任意 `vX.Y`。
+    """
+
+    DECL = ["## ⑯ 教材质量自检", "",
+            "**判据版本：v2.30**（本批按此版判据验收；判据变更见 references/第一册质量细则.md §6.6）。"]
+    HISTORY = "（历史判据 v2.17 仅供对照；本节数字仍按上面声明的那一版核对。）"
+
+    def test_a_later_historical_mention_does_not_downgrade_the_tier(self):
+        self.assertEqual(G.style_scope(self.DECL)[:3], (True, True, True))
+        with_history = self.DECL + ["", self.HISTORY]
+        self.assertEqual(G.style_scope(with_history)[:3], (True, True, True))
+        self.assertEqual(G.style_scope(with_history)[3], "2.30")
+
+    def test_all_four_scopes_ignore_the_historical_mention(self):
+        with_history = self.DECL + ["", self.HISTORY]
+        self.assertEqual(G.core_scope(with_history), G.core_scope(self.DECL))
+        self.assertEqual(G.form_scope(with_history), G.form_scope(self.DECL))
+        self.assertEqual(G.snip_scope(with_history), G.snip_scope(self.DECL))
+        self.assertEqual(G.ver_marker(with_history)[1], "2.30")
+
+    def test_a_later_lookalike_declaration_does_not_win_either(self):
+        """后面再写一条**同形态**的声明（写成 v2.17 或更早）也只认第一条。"""
+        two = self.DECL + ["", "**判据版本：v2.17**（旧版对照）。"]
+        self.assertEqual(G.style_scope(two)[3], "2.30")
+        self.assertEqual(G.style_scope(two)[:3], (True, True, True))
+
+    def test_the_declaration_wins_over_the_stamped_header(self):
+        """有规范字段时不许退回表头：字段是声明，表头只是机器表的口径。"""
+        lines = ["## ⑯ 教材质量自检",
+                 "**七组闸门实测**（判据 v2.24，结构化结果 schema v1）**：", "",
+                 "**判据版本：v2.30**（本批按此版判据验收）。"]
+        self.assertEqual(G.style_scope(lines)[3], "2.30")
+        self.assertEqual(G.style_scope(lines)[:3], (True, True, True))
+
+    def test_without_a_declaration_the_header_is_used_first_match_only(self):
+        """没有规范字段时才退回表头；退回时同样只认第一个（后面的说明不得覆盖）。"""
+        lines = ["## ⑯ 教材质量自检",
+                 "**七组闸门实测**（判据 v2.30，结构化结果 schema v1）**：", "",
+                 self.HISTORY]
+        self.assertEqual(G.style_scope(lines)[3], "2.30")
+        self.assertEqual(G.style_scope(lines)[:3], (True, True, True))
+
+    def test_old_last_match_rule_would_have_downgraded(self):
+        """反向断言：旧的"取最后一个"口径在这份样本上给出 v2.17 —— 记录被修掉的那个口子。"""
+        import re
+        txt = "\n".join(self.DECL + ["", self.HISTORY])
+        found = (re.findall(r"判据\s*(?:版\s*本)?\s*[:：]?\s*v?(\d+\.\d+)", txt)
+                 or re.findall(r"\bv(\d+\.\d+)\b", txt))
+        self.assertEqual(found[-1], "2.17", "旧口径的最后一个匹配正是那句历史说明")
+        self.assertEqual(G.find_versions(txt), ["2.30"], "新口径只认声明的那个版本")
+
+
 if __name__ == "__main__":
     unittest.main()
