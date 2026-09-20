@@ -1999,10 +1999,15 @@ def load_prose_whitelist():
 
 
 def check_prose(lines, by_class, root):
-    """⑥ 散文符号真实性（只扫代码围栏之外的行）"""
+    """⑥ 散文符号真实性（只扫代码围栏之外的行）
+
+    返回里除违规清单外还带**核验对象计数**（`n1/n2/n4/n3`，方案 §3.4 要求"适用性/对象数"可判）：
+    r1/r2/r4 只装违规，看它们数不出"到底核对了多少个引用"——也就无法区分"全对"与"一个都没查"。
+    """
     idx = prose_index(root)
     wl_prefix, wl_exact = load_prose_whitelist()
     r1, r2, r4, r3 = [], [], [], []
+    n1 = n2 = n3 = n4 = 0
     inside = False
     for i, l in enumerate(lines):
         if FENCE_LINE.match(l):
@@ -2012,9 +2017,12 @@ def check_prose(lines, by_class, root):
             continue
         n = i + 1
         m = PROSE_TITLE.match(l)
-        if m and m.group(1) not in idx["files"]:
-            r4.append((n, "件标题声明的 %s 不存在" % m.group(1)))
+        if m:
+            n4 += 1
+            if m.group(1) not in idx["files"]:
+                r4.append((n, "件标题声明的 %s 不存在" % m.group(1)))
         for mm in PROSE_FILE.finditer(l):
+            n1 += 1
             f, a, b = mm.group(1), int(mm.group(2)), mm.group(3)
             if f not in idx["files"]:
                 r1.append((n, "无此文件 %s" % f))
@@ -2024,12 +2032,16 @@ def check_prose(lines, by_class, root):
                 r1.append((n, "%s:%s 越界（该文件共 %d 行）" % (f, mm.group(2) + ("-" + b if b else ""), tot)))
         for mm in PROSE_CALL.finditer(l):
             cls, meth = mm.group(1), mm.group(2)
-            if cls in by_class and not re.search(r"\b" + meth + r"\b", idx["src"]):
+            if cls not in by_class:
+                continue
+            n2 += 1
+            if not re.search(r"\b" + meth + r"\b", idx["src"]):
                 if (cls + "." + meth) in wl_exact:
                     continue
                 r2.append((n, "%s.%s() —— 全仓源码里没有 %s 这个方法" % (cls, meth, meth)))
         for mm in PROSE_CAMEL.finditer(l):
             s = mm.group(1)
+            n3 += 1
             if s in by_class or s in idx["imported"] or s in wl_exact:
                 continue
             if any(s.startswith(x) for x in wl_prefix):
@@ -2037,7 +2049,7 @@ def check_prose(lines, by_class, root):
             if re.search(r"\b" + s + r"\b", idx["src"]):
                 continue
             r3.append((n, s))
-    return dict(r1=r1, r2=r2, r4=r4, r3=r3)
+    return dict(r1=r1, r2=r2, r4=r4, r3=r3, n1=n1, n2=n2, n3=n3, n4=n4)
 
 
 # ── 检查 ⑤：用法与接入（⑥ 每件的调用现场 / 上下游 / 实现注册 + 批级 ⑦.5 扩展路径） ──
@@ -2847,13 +2859,258 @@ def main():
     print("=" * 96)
 
     if jout:
-        json.dump(dict(fidelity=fid, reverse=rev_rows, density=den, lineno=ln_rows,
-                       usage=dict(items=u_items, ext=u_ext),
-                       form=dict(fails=form["fails"], stats=form["stats"]),
-                       struct=dict(fails=sden["fails"], report=sden["report"], stats=sden["stats"]),
-                       snapshot=sha, ver_marked=(ver_marker(lines)[2]), pass_=ok),
-                  open(jout, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+        import lecture_checks as LC      # 结果 schema 与规则 ID 的单一来源（方案 §3.4）
+        checks = []
+
+        def _find(messages, where=None, line=None, part=None, severity=LC.FAIL):
+            return [LC.make_finding(m, where=where, line=line, part_id=part, severity=severity)
+                    for m in messages]
+
+        # ── 结构（⓪） ──
+        if not st["is_batch"]:
+            checks.append(LC.make_check("G-STRUCT", LC.NOT_CHECKED, checked=0,
+                                        note="非教材文件：跳过 17 节结构判定（口径见教材标志投票 + 参照物豁免）"))
+        else:
+            checks.append(LC.make_check(
+                "G-STRUCT", LC.FAIL if s_reasons else LC.PASS,
+                checked=st["sections"], findings=_find(s_reasons),
+                note="节数=%d（应 17）｜围栏=%d｜占位=%d｜⑫八条=%d｜自指=%d｜回链=%d｜薄条=%d"
+                     % (st["sections"], st["fences"], st["residual"], st["eight"], st["selfref"],
+                        st["back"], len(st["thin"]))))
+
+        # ── ⓪b/⓪c/⓪d/⓪e/⓪f ──
+        if st["is_batch"]:
+            core_msgs = [v for v in core.values() if v]
+            checks.append(LC.make_check("G-CORE", (LC.FAIL if core_strict else LC.REPORT) if core_msgs else LC.PASS,
+                                        checked=3,
+                                        findings=_find(core_msgs, severity=LC.FAIL if core_strict else LC.REPORT),
+                                        note="FAIL 档（声明 v%s ≥ %s）" % (core_ver, CORE_FAIL_SINCE) if core_strict
+                                             else "报告档（未声明判据版本 ≥ %s，不追溯存量）" % CORE_FAIL_SINCE))
+            _pieces = int((form["stats"] or {}).get("pieces") or 0)
+            if _pieces:
+                checks.append(LC.make_check(
+                    "G-FORM", LC.FAIL if (form["fails"] and form_strict) else
+                    (LC.REPORT if form["fails"] else LC.PASS),
+                    checked=_pieces,
+                    findings=_find(form["fails"], severity=LC.FAIL if form_strict else LC.REPORT),
+                    note="②⑤⑥⑭ 必含形态（2.25 起 FAIL 档）"))
+            else:
+                checks.append(LC.make_check("G-FORM", LC.NOT_CHECKED, checked=0,
+                                            note="本批没有 6.x 逐件小节 → 形态判据不适用"))
+            snip_msgs = []
+            if (form["stats"] or {}).get("miss_snip"):
+                snip_msgs.append("⑥ %d/%d 件【怎么用】缺「可照抄的最小调用」：%s"
+                                 % (len(form["stats"]["miss_snip"]), form["stats"]["pieces"],
+                                    "、".join(form["stats"]["miss_snip"][:6])))
+            if (form["stats"] or {}).get("miss_howto"):
+                snip_msgs.append("⑥ %d/%d 件的【怎么接】缺「最小可编译实现」：%s"
+                                 % (len(form["stats"]["miss_howto"]), form["stats"]["pieces"],
+                                    "、".join(form["stats"]["miss_howto"][:6])))
+            checks.append(LC.make_check("G-SNIP", (LC.FAIL if snip_strict else LC.REPORT) if snip_msgs else LC.PASS,
+                                        checked=_pieces or 1,
+                                        findings=_find(snip_msgs, severity=LC.FAIL if snip_strict else LC.REPORT),
+                                        note="⑥ 可复制性（E12/E13，2.30 起 FAIL 档）")
+                          if _pieces else
+                          LC.make_check("G-SNIP", LC.NOT_CHECKED, checked=0,
+                                        note="本批没有 6.x 逐件小节 → 可复制性判据不适用"))
+        style_msgs, style_checked = [], int((sden["stats"] or {}).get("s7miss") is not None) + 1
+        for r in sden["fails"]:
+            if r.startswith("⑫ 第 5 条提示词未块化"):
+                sev = LC.FAIL if style3_strict else LC.REPORT
+            elif r.startswith(("⑥【讲解】", "⑫ 第 2 条", "⑫ 第 5 条")):
+                sev = LC.FAIL if style2_strict else LC.REPORT
+            else:
+                sev = LC.FAIL if style_strict else LC.REPORT
+            style_msgs.append((r, sev))
+        checks.append(LC.make_check(
+            "G-STYLE", (LC.FAIL if any(s == LC.FAIL for _m, s in style_msgs) else LC.REPORT)
+            if style_msgs else LC.PASS,
+            checked=style_checked,
+            findings=[LC.make_finding(m, severity=s) for m, s in style_msgs] +
+                     [LC.make_finding(m, severity=LC.REPORT) for m in sden["report"]],
+            note="⓪e 结构密度与排版（2.26/2.27/2.28 版本门）"))
+        if st["is_batch"]:
+            b3_msgs = [(r, LC.FAIL) for r in s3s["fails"]] + [(r, LC.REPORT) for r in s3s["report"]]
+            _b3n = int(st3.get("items") or 0)
+            if _b3n or b3_msgs:
+                checks.append(LC.make_check(
+                    "G-BATCH3", LC.FAIL if (s3s["fails"] and style4_strict) else
+                    (LC.REPORT if s3s["fails"] else LC.PASS),
+                    checked=_b3n or 1,
+                    findings=[LC.make_finding(m, severity=s) for m, s in b3_msgs],
+                    note="⓪f 批次3 结构基准门（2.29 版本门）"))
+            else:
+                checks.append(LC.make_check("G-BATCH3", LC.NOT_CHECKED, checked=0,
+                                            note="本批没有 6.x 逐件小节 → 结构基准门不适用"))
+
+        # ── ①②③③c④⑤⑥ ──
+        fid_findings = []
+        for r in chk:
+            if r["lost"] is None:
+                fid_findings.append(LC.make_finding(
+                    "无法归属源文件（%s）" % r["sect"][:60], where=os.path.basename(lec), line=r["start"]))
+            elif fail_lines(r):
+                fid_findings.append(LC.make_finding(
+                    "候选不符 %d/%d 行（%s）%s" % (fail_lines(r), r["n_code"],
+                                              r["cand"] or "未归属",
+                                              "【历史版本块，按快照核验】" if r["hist"] else ""),
+                    where=r["cand"] or os.path.basename(lec), line=r["start"], part_id=r["sect"][:40]))
+        checks.append(LC.make_check("G-FIDELITY", LC.FAIL if (lost or unattr) else LC.PASS,
+                                    checked=len(chk), findings=fid_findings,
+                                    note="代码行 %d，候选不符 %d 行（%s）"
+                                         % (tot, lost, "有快照" if sha else "未声明快照，无法区分演进与编造"))
+                      if chk else
+                      LC.make_check("G-FIDELITY", LC.NOT_CHECKED, checked=0,
+                                    note="本批没有可核验的 java 代码块 → 正向保真**未检查**（0 对象不是 PASS）"))
+        rev_findings = [LC.make_finding("★类 %s 覆盖 %.1f%%（判据 ≥99.5%%）缺 %d 行：%s"
+                                        % (r["cls"], r["cov"] * 100, r["miss"],
+                                           "；".join(s[:60] for s in r["samples"][:3])),
+                                        where=r.get("src"), part_id=r["sect"][:40])
+                        for r in bad_rev]
+        checks.append(LC.make_check("G-REVERSE", LC.FAIL if bad_rev else LC.PASS,
+                                    checked=len(rev_rows), findings=rev_findings,
+                                    note="★ 类 %d 个（★ 标在父标题同样计入）" % len(rev_rows))
+                      if rev_rows else
+                      LC.make_check("G-REVERSE", LC.NOT_CHECKED, checked=0,
+                                    note="本批没有可归属的 ★ 类块 → 反向覆盖**未检查**（0 对象不是 PASS）"))
+        den_findings = []
+        for r, reasons in bad_den:
+            den_findings.append(LC.make_finding(
+                "关键行=%d 注释=%d 最长无注释=%d → %s" % (r["key_lines"], r["comments"], r["max_run"],
+                                                       "；".join(reasons)),
+                where=os.path.basename(lec), line=r["start"], part_id=r["sect"][:40]))
+        checks.append(LC.make_check("G-DENSITY", LC.FAIL if bad_den else LC.PASS,
+                                    checked=len(den), findings=den_findings,
+                                    note="密度：连段<8 且注释 ≥ 关键行÷12")
+                      if den else
+                      LC.make_check("G-DENSITY", LC.NOT_CHECKED, checked=0,
+                                    note="没有可判密度的代码块（CJK 语言且 ≥5 行）→ **未检查**"))
+        checks.append(LC.make_check("G-SIG", LC.FAIL if sig else LC.PASS,
+                                    checked=len(star_classes(blocks, by_class)),
+                                    findings=[LC.make_finding("★类方法签名无注释：%s → %s" % (r["cls"], "、".join(r["missing"][:8])),
+                                                              where=r["src"]) for r in sig]
+                                    if star_classes(blocks, by_class) else [],
+                                    note="★类方法签名覆盖（按整类判定）")
+                      if star_classes(blocks, by_class) else
+                      LC.make_check("G-SIG", LC.NOT_CHECKED, checked=0, note="本批没有 ★ 类 → 未检查"))
+        ln_checked = sum(r["checked"] for r in ln_all)
+        checks.append(LC.make_check("G-LINENO", LC.FAIL if ln_rows else LC.PASS, checked=ln_checked,
+                                    findings=[LC.make_finding("标 :L%d → 实际第 %d 行：%s" % (w, real, s[:60]),
+                                                              where=os.path.basename(lec), line=r["start"], part_id=r["sect"][:40])
+                                              for r in ln_rows for w, real, s in r["samples"][:3]],
+                                    note="可判定标注 %d 处" % ln_checked)
+                      if ln_checked else
+                      LC.make_check("G-LINENO", LC.NOT_CHECKED, checked=0,
+                                    note="没有任何可判定的行号标注（内容无法唯一定位）→ 未检查"))
+        if not st["is_batch"]:
+            checks.append(LC.make_check("G-USAGE", LC.NOT_CHECKED, checked=0,
+                                        note="非教材批：跳过 用法与接入 判定"))
+        else:
+            use_findings = []
+            for tag, rows in (("缺【怎么用】", bad_use), ("缺【上下游】", bad_io), ("缺【怎么接】", bad_wire)):
+                for r in rows:
+                    use_findings.append(LC.make_finding("%s：%s" % (tag, r["title"]),
+                                                       where=os.path.basename(lec), line=r["at"],
+                                                       part_id="%s %s" % (r["no"], r["title"][:24])))
+            for r in bad_pos:
+                use_findings.append(LC.make_finding("⑤ 位置错误：%s" % "；".join(r["pos_bad"]),
+                                                   where=os.path.basename(lec), line=r["at"],
+                                                   part_id="%s %s" % (r["no"], r["title"][:24])))
+            if bad_ext:
+                use_findings.append(LC.make_finding(
+                    "缺 ⑦.5 扩展与接入路径小节" if not u_ext["at"] else
+                    "⑦.5 只有 %d 条编号步骤（<3）" % u_ext["steps"],
+                    where=os.path.basename(lec), line=u_ext["at"] or None))
+            checks.append(LC.make_check(
+                "G-USAGE", LC.FAIL if (bad_use or bad_io or bad_wire or bad_pos or bad_ext) else LC.PASS,
+                checked=len(u_live), findings=use_findings,
+                note="逐件 %d（历史版本小节 %d 个免检）｜抽象件 %d" % (len(u_live), len(u_items) - len(u_live), len(iface)))
+                          if u_live else
+                          LC.make_check("G-USAGE", LC.NOT_CHECKED, checked=0,
+                                        note="本批没有 6.x 逐件小节 → 用法与接入**未检查**"))
+        prose_checked = prose.get("n1", 0) + prose.get("n2", 0) + prose.get("n3", 0) + prose.get("n4", 0)
+        prose_findings = [LC.make_finding("%s：%s" % (tag, s), where=os.path.basename(lec), line=n,
+                                          severity=LC.FAIL)
+                          for tag, rows in (("文件:行 引用不成立", prose["r1"]),
+                                            ("件标题声明的文件不存在", prose["r4"]),
+                                            ("本仓类.方法 全仓无此方法", prose["r2"]))
+                          for n, s in rows]
+        prose_findings += [LC.make_finding("反引号符号待人工确认：%s" % s, where=os.path.basename(lec),
+                                           line=n, severity=LC.REPORT) for n, s in prose["r3"]]
+        if prose_checked:
+            checks.append(LC.make_check("G-PROSE", LC.FAIL if p_bad else LC.PASS, checked=prose_checked,
+                                        findings=prose_findings,
+                                        note="核验引用 %d 处（文件:行 %d / 本仓类.方法 %d / 反引号符号 %d）；"
+                                             "不成立 %d 处；待人工确认 %d 处（不计 FAIL）"
+                                             % (prose_checked, prose["n1"], prose["n2"], prose["n3"],
+                                                len(p_bad), len(prose["r3"]))))
+        else:
+            checks.append(LC.make_check("G-PROSE", LC.NOT_CHECKED, checked=0,
+                                        note="正文里没有可核验的 文件:行 / 件标题 .java / 本仓类.方法 引用 → 未检查"))
+
+        # ── 快照与语言能力（可见，不与退出码打架） ──
+        if sha and not snap_ok:
+            print("   ⚠ 快照 %s 读取失败 → ① 只能退回当前树比对（**证据不完整**，不是完整通过）" % sha)
+            checks.append(LC.make_check("G-SNAPSHOT", LC.REPORT, checked=0,
+                                        note="批头声明了快照 %s 但读取失败：① 无法区分「源码演进」与「编造」。"
+                                             "本项保持报告档（升 FAIL 属判据变更，需另起版本 + 回归）" % sha))
+        elif sha:
+            checks.append(LC.make_check("G-SNAPSHOT", LC.PASS, checked=1,
+                                        note="快照 %s 读取成功（%s）" % (sha, how)))
+        else:
+            checks.append(LC.make_check("G-SNAPSHOT", LC.NOT_CHECKED, checked=0,
+                                        note="批头未声明「源码依据：commit <sha>」→ 无法区分演进与编造"))
+
+        if _pyord or _man_blocks:
+            if _man:
+                checks.append(LC.make_check("G-PY", LC.FAIL if py_bad else LC.PASS,
+                                            checked=_s_pos + _s_lnchk,
+                                            findings=[LC.make_finding("非 Java 位置/行号不符", where=os.path.basename(lec),
+                                                                      severity=LC.FAIL)] * (1 if py_bad else 0),
+                                            note="manifest 位置级：①p 核对 %d 处不符 %d ｜ ②p ★文件 %d 个不足 %d ｜ "
+                                                 "④p 可判定 %d 处漂移 %d"
+                                                 % (_s_pos, _s_pbad, len(_rev2s), len(_p2s), _s_lnchk, _s_lnbad)))
+            else:
+                checks.append(LC.make_check("G-PY", LC.REPORT, checked=_r_pbad + _r_lnbad + len(_rev2s),
+                                            note="无 manifest → 归属级近似，只可见不判红（①p 不符 %d 处 / "
+                                                 "④p 漂移 %d 处 / ★文件 %d 个）" % (_r_pbad, _r_lnbad, len(_rev2s))))
+        else:
+            checks.append(LC.make_check("G-PY", LC.NOT_CHECKED, checked=0,
+                                        note="本批没有非 Java 可注块 → 未检查（0 对象不是 PASS）"))
+        if is_rec and not st["is_batch"]:
+            _strict = declared_at_least(lines, RECORD_FAIL_SINCE)
+            checks.append(LC.make_check("G-RECORD", (LC.FAIL if _strict else LC.REPORT) if _rec_bad else LC.PASS,
+                                        checked=1,
+                                        findings=_find(_rec_bad, severity=LC.FAIL if _strict else LC.REPORT),
+                                        note="记录类形态（R1 状态行 / R2 未完成清单 / R3 不冒充成品）"))
+        checks.append(LC.make_check("G-LECTURE", LC.REPORT, checked=1,
+                                    note="教材判定：%s —— %s" % ("是" if is_lec else "否", lec_why)))
+
+        result = LC.make_result("gate_lecture.py", checks,
+                                contract_version=GATE_VERSION,
+                                lecture_sha256=LC.sha256_file(lec),
+                                source_manifest_sha256=LC.sha256_file(_manifest_for(lec) or "") if _manifest_for(lec) else None,
+                                source_root=ROOT,
+                                extra=dict(fidelity=fid, reverse=rev_rows, density=den, lineno=ln_rows,
+                                           usage=dict(items=u_items, ext=u_ext),
+                                           form=dict(fails=form["fails"], stats=form["stats"]),
+                                           struct=dict(fails=sden["fails"], report=sden["report"],
+                                                       stats=sden["stats"]),
+                                           snapshot=sha, ver_marked=(ver_marker(lines)[2]),
+                                           pass_=ok, verdict=("PASS" if ok else "FAIL")))
+        # `verdict` 与退出码同源（`pass_`），`pass` 由阻塞项得出——两者不一致时以退出码为准并在 note 里点明
+        if result["pass"] != ok:
+            result["checks"].append(LC.make_check(
+                "G-VERDICT", LC.REPORT, checked=1,
+                note="结构化 pass=%s 与进程退出码判定=%s 不一致——以退出码为准（退出码是既有契约），"
+                     "差异项请单独排查" % (result["pass"], ok)))
+        json.dump(result, open(jout, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
         print("明细已写:", jout)
+        print("   结构化结果：%d 条检查（%s）｜lecture sha256=%s"
+              % (len(result["checks"]),
+                 "/".join(LC.STATUSES[i] + "=" + str(sum(1 for c in result["checks"] if c["status"] == LC.STATUSES[i]))
+                          for i in range(len(LC.STATUSES))),
+                 (result["lecture_sha256"] or "")[:12]))
     return 0 if ok else 1
 
 

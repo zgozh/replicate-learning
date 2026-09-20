@@ -1122,6 +1122,70 @@ def check_slots(r):
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def check_structured_result(r):
+    """㉓ 结构化门禁结果与盖章闭环（方案 §3.4）。
+
+    钉三件事：① `--json` 出来的结果带**稳定规则 ID / 契约版本 / 被检查正文的哈希**；
+    ② **0 对象的检查不许写 PASS**（真空通过在结果里必须可见为 `NOT_CHECKED`）；
+    ③ 结果只能给**它检查过的那份正文**盖章——正文一变，`validate_result` 必须报错。
+    """
+    sys.path.insert(0, HERE)
+    import lecture_checks as LC          # noqa: E402
+    import gate_lecture as G             # noqa: E402  （只为读 GATE_VERSION）
+
+    sample = os.path.join(ROOT, 'examples', '黄金样例.md')
+    if not os.path.isfile(sample):
+        r.fail('缺样本 %s（结构化结果自测需要一份仓库内可跑的文件）' % sample)
+        return
+    tmp = tempfile.mkdtemp(prefix='result_selfcheck_')
+    try:
+        jout = os.path.join(tmp, 'result.json')
+        p = subprocess.run([sys.executable, os.path.join(HERE, 'gate_lecture.py'), sample,
+                            '--src', ROOT, '--json', jout],
+                           capture_output=True, text=True, encoding='utf-8', errors='replace')
+        if not os.path.isfile(jout):
+            r.fail('gate_lecture --json 没写出结果文件（rc=%s）：%s' % (p.returncode, (p.stderr or '')[:200]))
+            return
+        data = json.load(io.open(jout, encoding='utf-8'))
+        problems = []
+        if data.get('schema_version') != LC.SCHEMA_VERSION:
+            problems.append('schema_version=%r' % data.get('schema_version'))
+        if str(data.get('contract_version')) != G.GATE_VERSION:
+            problems.append('契约版本 %r ≠ gate %s' % (data.get('contract_version'), G.GATE_VERSION))
+        if data.get('lecture_sha256') != LC.sha256_file(sample):
+            problems.append('lecture_sha256 与文件不符')
+        vacuous = [c['id'] for c in data.get('checks', []) if c['status'] == LC.PASS and not c['checked']]
+        if vacuous:
+            problems.append('0 对象却写 PASS：%s' % vacuous)
+        if bool(data.get('pass')) != (p.returncode == 0):
+            problems.append('结构化 pass=%s 与退出码 %s 不一致' % (data.get('pass'), p.returncode))
+        if not all(c.get('id') for c in data.get('checks', [])):
+            problems.append('存在没有规则 ID 的检查项')
+        if problems:
+            r.fail('结构化结果不合规：%s' % '；'.join(problems))
+        else:
+            ids = [c['id'] for c in data['checks']]
+            r.ok('结构化结果：%d 条检查全部带稳定规则 ID / 契约 v%s / 正文哈希，且无「0 对象 PASS」'
+                 % (len(ids), data['contract_version']))
+
+        stale = LC.validate_result(data, expect_lecture_sha256='0' * 64,
+                                   expect_contract_version=G.GATE_VERSION,
+                                   required_ids=['G-STRUCT'])
+        if any('正文在检查之后被改过' in x for x in stale):
+            r.ok('盖章前置校验：正文哈希不符 → 拒绝（旧结果不得给改动过的正文背书）')
+        else:
+            r.fail('正文哈希不符却未报错：%s' % stale)
+        miss = LC.validate_result(data, expect_lecture_sha256=data['lecture_sha256'],
+                                 expect_contract_version=G.GATE_VERSION,
+                                 required_ids=['G-NOT-A-REAL-CHECK'])
+        if any('缺少必需检查' in x for x in miss):
+            r.ok('盖章前置校验：结果缺少必需检查项 → 拒绝')
+        else:
+            r.fail('缺少必需检查项却未报错：%s' % miss)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def main():
     print('=' * 88)
     print('技能文档一致性自检（skill_selfcheck.py）  根目录:', ROOT)
@@ -1171,6 +1235,8 @@ def main():
     check_preflight(r)
     print('\n㉒ 稳定源码槽位与可重复构建（方案 §3.3）：幂等 + hash 漂移拒绝')
     check_slots(r)
+    print('\n㉓ 结构化门禁结果与盖章闭环（方案 §3.4）：稳定 ID / 无真空 PASS / 哈希绑定')
+    check_structured_result(r)
     print('\n' + '=' * 88)
     print('检查项 %d，失败 %d → %s' % (r.n, r.bad, 'PASS ✅' if r.bad == 0 else 'FAIL ❌'))
     print('=' * 88)
