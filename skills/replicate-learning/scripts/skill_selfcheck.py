@@ -1209,6 +1209,18 @@ def check_structured_result(r):
             r.ok('盖章前置校验：结果整段缺少 pass/pass_/verdict → 拒绝（缺字段不等于合格）')
         else:
             r.fail('缺少结论字段的结果未被拒绝：%s' % gone)
+
+        # verdict 只认确切写法（审查第四轮：`BYPASS` 曾因"包含 PASS"被判通过）
+        lookalike = json.loads(json.dumps(forged, ensure_ascii=False))
+        lookalike['verdict'] = 'BYPASS'
+        lookalike['pass'] = True
+        lookalike['pass_'] = True
+        bad_verdict = LC.validate_result(lookalike, expect_lecture_sha256=data['lecture_sha256'],
+                                         expect_contract_version=G.GATE_VERSION)
+        if any('verdict' in x for x in bad_verdict) and not LC.verdict_is_pass('BYPASS'):
+            r.ok('盖章前置校验：verdict=`BYPASS` 之类含 PASS 的文本 → 拒绝（只认 PASS / 总判定: PASS）')
+        else:
+            r.fail('verdict 判定过宽：BYPASS 被当作通过（%s）' % bad_verdict)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -1338,6 +1350,14 @@ def check_publish(r):
                 r.ok('发布器：最终记录缺 %s → 拒绝发布（缺字段不等于合格）' % field)
             else:
                 r.fail('发布器：最终记录缺 %s 仍被接受——字段存在性未校验' % field)
+        # 类型冒充同样必须拒绝（审查第四轮：`exit_code=true`、`pass=1`、`rolled_back=0`）
+        for field, value in (('exit_code', True), ('exit_code', '0'), ('pass', 1),
+                             ('stamp_did_not_break_anything', 1), ('rolled_back', 0)):
+            healthy_final(**{field: value})
+            if run(record(good)) != 0:
+                r.ok('发布器：最终记录 %s=%r（类型冒充）→ 拒绝发布' % (field, value))
+            else:
+                r.fail('发布器：最终记录 %s=%r 仍被接受——类型未严格校验' % (field, value))
         io.open(final, 'w', encoding='utf-8', newline='').write(before_final)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

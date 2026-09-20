@@ -142,27 +142,36 @@ def check_evidence(rec, root):
             raise Conflict('门禁最终记录不存在：%s（先跑 sync_gate_result --apply 生成）' % rec['gate_final'])
         final = json.load(io.open(gf, encoding='utf-8'))
         problems = []
-        # **字段必须存在且值明确合格**：原实现是"存在且不合格才报错"，
-        # 于是删掉 contract_version / stamp_did_not_break_anything / rolled_back 就能溜过去（审查第三轮实测）。
-        for field, want, human in (("pass", True, "门禁是否通过"),
-                                   ("exit_code", 0, "复检进程退出码"),
-                                   ("rolled_back", False, "盖章失败后是否已回滚"),
-                                   ("stamp_did_not_break_anything", True, "盖章是否破坏了成品"),
-                                   ("contract_version", None, "最终记录的判据版本"),
-                                   ("final_lecture_sha256", None, "最终成品哈希")):
+        # **类型与值都要严格核对**：缺字段 / null 一律拒绝；布尔字段必须真是布尔（`1`/`"true"` 不算），
+        # exit_code 必须真是整数 0（`True`/`False`/`"0"`/`0.0` 都不算），契约版本与最终哈希必须**逐字相等**。
+        # 为什么这么抠：JSON 里 `true` 与 `1` 能互相冒充，一旦用 `==`/真值判断，"没通过"就能被写成"通过"。
+        for field, kind, want, human in (
+                ("pass", "bool", True, "门禁是否通过"),
+                ("stamp_did_not_break_anything", "bool", True, "盖章是否破坏了成品"),
+                ("rolled_back", "bool", False, "盖章失败后是否已回滚"),
+                ("exit_code", "int", 0, "复检进程退出码"),
+                ("contract_version", "version", contract_version(), "最终记录的判据版本"),
+                ("final_lecture_sha256", "sha", lec_sha, "最终成品哈希")):
             if field not in final or final[field] is None:
                 problems.append('缺少字段 %s（%s）——记录不完整，不得作为发布依据' % (field, human))
                 continue
-            if field == "contract_version":
-                if str(final[field]) != str(contract_version()):
-                    problems.append('contract_version=%s ≠ 当前 v%s'
-                                    % (final[field], contract_version()))
-            elif field == "final_lecture_sha256":
-                if final[field] != lec_sha:
-                    problems.append('final_lecture_sha256=%s… ≠ 讲义当前哈希 %s…（盖章后又改过正文）'
-                                    % (str(final[field])[:12], lec_sha[:12]))
-            elif final[field] != want:
-                problems.append('%s=%r（应为 %r）' % (field, final[field], want))
+            value = final[field]
+            if kind == "bool":
+                if not isinstance(value, bool) or value is not want:
+                    problems.append('%s=%r（%s）——要求布尔 %r，拒绝其他类型/取值'
+                                    % (field, value, human, want))
+            elif kind == "int":
+                if isinstance(value, bool) or not isinstance(value, int) or value != want:
+                    problems.append('%s=%r（%s）——要求整数 %r（`true`/`"0"`/`0.0` 都不算）'
+                                    % (field, value, human, want))
+            elif kind == "version":
+                if not isinstance(value, str) or value != want:
+                    problems.append('%s=%r（%s）——必须逐字等于当前 v%s'
+                                    % (field, value, human, want))
+            elif kind == "sha":
+                if not isinstance(value, str) or value != want:
+                    problems.append('%s=%r（%s）——必须逐字等于讲义当前哈希 %s…'
+                                    % (field, value, human, str(want)[:12]))
         if final.get('verification_error') or final.get('result_read_error'):
             problems.append('复检自身出错：%s' % (final.get('verification_error')
                                                 or final.get('result_read_error')))

@@ -353,6 +353,32 @@ class ConclusionFieldTests(unittest.TestCase):
             self.assertIn("缺少顶层结论字段 %s" % field, blob)
 
 
+class VerdictStrictnessTests(unittest.TestCase):
+    """审查第四轮：`verdict` 只认确切写法，**不能"包含 PASS"就算通过**（`BYPASS` 曾能溜过）。"""
+
+    def test_accepts_only_the_two_canonical_forms(self):
+        for good in ("PASS", "pass", " PASS ", "PASS ✅", "总判定: PASS", "总判定: PASS ✅",
+                     "总判定：PASS ✅", "PASS。"):
+            with self.subTest(verdict=good):
+                self.assertTrue(LC.verdict_is_pass(good), good)
+
+    def test_rejects_lookalikes_and_failures(self):
+        for bad in ("BYPASS", "PASSED", "NOT PASS", "PASSFAIL", "  ", "", None, True, 1,
+                    "总判定: FAIL ❌", "FAIL", "总判定: BYPASS ✅", "通过", "pas"):
+            with self.subTest(verdict=bad):
+                self.assertFalse(LC.verdict_is_pass(bad), bad)
+
+    def test_bypass_verdict_blocks_the_stamp(self):
+        for lookalike in ("BYPASS", "总判定: BYPASS ✅", "PASSED"):
+            with self.subTest(verdict=lookalike):
+                result = good_result("a" * 64)
+                result["verdict"] = lookalike
+                problems = LC.validate_result(result, expect_lecture_sha256="a" * 64,
+                                              expect_contract_version=VERSION,
+                                              required_ids=list(S.REQUIRED_CHECKS))
+                self.assertTrue(any("verdict" in p for p in problems), problems)
+
+
 class GateAllRecordFileTests(unittest.TestCase):
     """记录类文件声明了判据版本时，全库记分卡不许崩（原实现 `s_bad` 未定义 → NameError）。"""
 

@@ -42,7 +42,8 @@
 | `8da47e4` | test(e2e): 端到端脚本化试运行 |
 | `8a57300` | fix(review): 审查 4 处缺陷（归档覆盖 / 盖章校验 / 复检回滚 / 验收脚本） |
 | `ef7c2fe` | fix(review2): 发布入口改用完整结论校验；复检异常路径也回滚 |
-| 见 §9.2 | fix(review3): 结论字段必须存在且值明确合格 |
+| `3de53c0` | fix(review3): 结论字段必须存在且值明确合格 |
+| 见 §9.3 | fix(review4): verdict 只认确切写法；最终记录类型与取值严格核对 |
 
 ## 3. 判据回归：改造前后判定必须一字不变
 
@@ -143,9 +144,9 @@
 cd skills/replicate-learning
 
 # 全量自检与单测
-python scripts/skill_selfcheck.py          # 期望：检查项 99，失败 0 → PASS
+python scripts/skill_selfcheck.py          # 期望：检查项 105，失败 0 → PASS
 python scripts/v2_selfcheck.py             # 期望：PASS (6 contract entries)
-python -m unittest discover -s scripts -p "test_*.py" -t scripts   # 期望：107 项 OK
+python -m unittest discover -s scripts -p "test_*.py" -t scripts   # 期望：112 项 OK
 
 # 预检：首轮计划必须报出 3 个 ★ 签名缺口 + 5 处密度连段；修复后计划必须 0 缺口
 python scripts/batch_preflight.py --src tests/fixtures/batch48/project \
@@ -252,3 +253,24 @@ gate_result 健康结果（预期 rc=0）                              rc=0
 
 验证（第三轮修复后复跑）：`skill_selfcheck` **99 项 0 失败**、单测 **107 项 OK**、`v2_selfcheck` PASS、
 端到端脚本化试运行 17 步期望全中。
+
+### 9.3 第四轮审查（判定只认确切写法 + 类型严格）
+
+| # | 审查意见 | 复现 | 修复 | 回归测试 |
+|---|---|---|---|---|
+| 8 | **`verdict` 靠子串匹配**（`lecture_checks.py`） | `BYPASS`（含 `PASS`、无 `FAIL`）被判为通过 | 新增 `verdict_is_pass()`：只认 `PASS` / `PASS ✅` / `总判定: PASS` / `总判定: PASS ✅`（去 ✅、去前缀、去句末标点后**必须整串等于 `PASS`**）；`BYPASS` / `PASSED` / `NOT PASS` / `PASSFAIL` / 空值 / 非字符串一律拒绝 | `VerdictStrictnessTests`：8 种合法写法接受、13 种近似/失败写法拒绝、`BYPASS` 结果无法盖章 |
+| 9 | **类型与取值未严格校验**（`publish_batch.py`） | `exit_code=true`、`pass=1`、`rolled_back=0`、`contract_version=2.3` 等类型冒充被接受 | 六个字段按类型分别核对：布尔字段要求 `isinstance(v, bool) and v is True/False`；`exit_code` 要求 `isinstance(v, int) and not isinstance(v, bool) and v == 0`；`contract_version` / `final_lecture_sha256` 要求是字符串且**逐字相等**（不做 `str()` 归一） | `test_gate_final_type_confusion_is_refused`（20 组类型/取值冒充逐一审）、`test_gate_final_with_exact_types_is_accepted`；`skill_selfcheck` ㉓ 加 1 条、㉔ 加 5 条 |
+
+定向复现（本次修复后，CLI/库函数实跑）：
+
+```text
+verdict='PASS' → PASS ｜ '总判定: PASS ✅' → PASS
+verdict='BYPASS' → 拒绝 ｜ '总判定: BYPASS ✅' → 拒绝 ｜ 'PASSED' → 拒绝 ｜ '总判定: FAIL ❌' → 拒绝
+最终记录：健康（真布尔 / 真整数 0）rc=0
+  exit_code=True/False/'0'/0.0/1 → 全部 rc=1
+  pass=1 / 'true' → rc=1 ｜ stamp_did_not_break_anything=1 → rc=1
+  rolled_back=0 / 'false' → rc=1 ｜ contract_version=2.3 → rc=1 ｜ final_lecture_sha256=12345 → rc=1
+```
+
+验证（第四轮修复后复跑）：`skill_selfcheck` **105 项 0 失败**、单测 **112 项 OK**、`v2_selfcheck` PASS、
+端到端脚本化试运行 17 步期望全中；`gate_lecture.py` 自 `c03baca` 起未改动（判据回归 11/11 继续成立）。

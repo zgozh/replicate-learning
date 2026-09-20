@@ -21,6 +21,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import sys
 
 SCHEMA_VERSION = 1
@@ -228,6 +229,22 @@ REQUIRED_RESULT_CHECKS = ("G-STRUCT", "G-FIDELITY", "G-REVERSE", "G-DENSITY", "G
                           "G-USAGE", "G-PROSE")
 
 
+def verdict_is_pass(value):
+    """`verdict` 是否为"通过的判定"——**只认两种确切写法**，不是"包含 PASS"。
+
+    允许：`PASS`、`PASS ✅`、`总判定: PASS`、`总判定: PASS ✅`（闸门与构造函数就是这两种）。
+    拒绝：`BYPASS` / `PASSED` / `NOT PASS` / `PASSFAIL` / 空值 / `总判定: FAIL ❌`。
+    上一版写的是 `"PASS" in text and "FAIL" not in text`，于是 **`BYPASS` 会被当成通过**
+    （审查第四轮实测）——"包含某个词"从来不是判定，等于把结论交给子串匹配。
+    """
+    if not isinstance(value, str):
+        return False
+    text = value.strip().upper().replace("✅", "").strip()
+    text = re.sub(r"^总判定\s*[:：]\s*", "", text).strip()
+    text = text.rstrip("。.!！")
+    return text == "PASS"
+
+
 def validate_result(result, *, expect_lecture_sha256=None, expect_manifest_sha256=None,
                     expect_contract_version=None, required_ids=None):
     """盖章前的自检：结果必须与"现在要盖章的这份内容"对得上。返回错误列表（空 = 可盖章）。
@@ -268,20 +285,20 @@ def validate_result(result, *, expect_lecture_sha256=None, expect_manifest_sha25
     blocking = [c.get("id") for c in result.get("checks", []) if c.get("status") in BLOCKING]
     # 顶层结论字段：**必须存在且值明确合格**。原实现写的是"存在且为假才报错"，
     # 于是把 pass / pass_ / verdict 整段删掉就能绕过结论校验（审查第三轮实测）。
-    for field, ok_value, human in (("pass", True, "顶层 pass 必须存在且为 true"),
-                                   ("pass_", True, "pass_ 必须存在且为 true"),
+    for field, ok_value, human in (("pass", True, "顶层 pass 必须存在且为布尔 true"),
+                                   ("pass_", True, "pass_ 必须存在且为布尔 true"),
                                    ("verdict", None, "verdict 必须存在且明确写成 PASS")):
         if field not in result:
             problems.append("结果缺少顶层结论字段 %s（%s）——不许盖章" % (field, human))
             continue
         value = result[field]
         if field == "verdict":
-            # 闸门写的是 `总判定: PASS ✅`，构造函数写 `PASS`——两种都认；出现 FAIL/空值一律拒绝。
-            text = str(value).strip().upper()
-            if not text or "PASS" not in text or "FAIL" in text:
-                problems.append("结果 verdict=%r 不是 PASS——不许盖章" % value)
+            if not verdict_is_pass(value):
+                problems.append("结果 verdict=%r 不是 PASS（只认 `PASS` 与 `总判定: PASS`，"
+                                "`BYPASS` 之类含 PASS 的文本不算）——不许盖章" % value)
         elif value is not ok_value:
-            label = "自述未通过" if value is False else "取值 %r 非法" % value
+            # `is not` 是身份比较：`1` / `"true"` 都不等于 `True`，不会被当成通过
+            label = "自述未通过" if value is False else "取值 %r（类型 %s）非法" % (value, type(value).__name__)
             problems.append("结果 %s=%r（%s）——不许盖章" % (field, value, label))
     if result.get("pass") and blocking:
         problems.append("结果 pass=true 却有阻塞项 %s（结论与检查项矛盾）" % "、".join(blocking))

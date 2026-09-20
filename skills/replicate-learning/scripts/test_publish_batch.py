@@ -266,6 +266,32 @@ class PublishTests(unittest.TestCase):
                 self._final(**{field: None})
                 self.assertEqual(self.run_publish(["--apply"]), 1, "%s=null 仍被接受" % field)
 
+    def test_gate_final_type_confusion_is_refused(self):
+        """审查第四轮：`exit_code=true`、`pass=1`、`rolled_back=0` 这类**类型冒充**必须拒绝。
+
+        JSON 里 `true` 与 `1` 能被 `==`/真值判断混为一谈，一旦放过就等于"没通过也能写成通过"。
+        """
+        cases = [
+            ("exit_code", True), ("exit_code", False), ("exit_code", "0"), ("exit_code", 0.0),
+            ("exit_code", 1), ("exit_code", "1"),
+            ("pass", 1), ("pass", "true"), ("pass", "True"), ("pass", 0),
+            ("stamp_did_not_break_anything", 1), ("stamp_did_not_break_anything", "true"),
+            ("rolled_back", 0), ("rolled_back", "false"), ("rolled_back", ""),
+            ("contract_version", 2.3), ("contract_version", " 2.30 "), ("contract_version", "2.17"),
+            ("final_lecture_sha256", 12345), ("final_lecture_sha256", ""),
+        ]
+        for field, value in cases:
+            with self.subTest(field=field, value=value):
+                self._final(**{field: value})
+                before = self.snapshot()
+                self.assertEqual(self.run_publish(["--apply"]), 1,
+                                 "%s=%r（%s）仍被接受" % (field, value, type(value).__name__))
+                self.assertEqual(self.snapshot(), before)
+
+    def test_gate_final_with_exact_types_is_accepted(self):
+        self._final()                       # pass=True / exit_code=0 / rolled_back=False（真布尔/真整数）
+        self.assertEqual(self.run_publish(["--apply"]), 0)
+
     def test_gate_final_with_failed_rollback_is_refused(self):
         self._final(rollback_ok=False)
         self.assertEqual(self.run_publish(["--apply"]), 1)
