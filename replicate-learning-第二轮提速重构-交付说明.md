@@ -23,11 +23,11 @@
 | §3.3 稳定槽位与可重复构建 | `new_batch.py --plan/--batch-json`；`inject_source.py` 槽位寻址；`scripts/batch_build.py` | 连注两次逐字节幂等；源文件 hash 漂移 → 拒绝写入；旧分片 → 退回 anchor 并告警 | `python scripts/batch_build.py --batch <batch.json> --check` |
 | §3.4 结构化门禁与盖章 | `gate_lecture.py --json` 结构化结果；`sync_gate_result.py --result-json/--final-json` | 11 份样本判定逐字不变（§3）；五种拒绝路径（哈希/版本/缺项/阻塞/真空 PASS） | `python scripts/gate_lecture.py <批次.md> --src <项目根> --json r.json && python scripts/sync_gate_result.py <批次.md> --src <项目根> --result-json r.json --apply` |
 | §3.5 单一记录与安全归档 | `scripts/publish_batch.py` + `batch_record.json` | 第二处冲突 → 全部目标不动；重复发布零变化；`--git-add` 只加点名文件 | `python scripts/publish_batch.py --record <batch_record.json>`（缺省 dry-run） |
-| §4 文档整理 | SKILL 保持 58 行短入口；执行协议/操作手册/质量卡/质量细则/REFERENCES README/根 README 同步 | `skill_selfcheck` 92 项 0 失败 | `python scripts/skill_selfcheck.py` |
+| §4 文档整理 | SKILL 保持 58 行短入口；执行协议/操作手册/质量卡/质量细则/REFERENCES README/根 README 同步 | `skill_selfcheck` 92 项 0 失败（该阶段值；四轮审查后的终值为 105 项，见 §9.3） | `python scripts/skill_selfcheck.py` |
 
 新增 4 个工具 + 1 个公共模块（`batch_trace` / `batch_preflight` / `batch_build` / `publish_batch` / `lecture_checks`），
-新增 4 个行为自测（`test_batch_trace` / `test_batch_preflight` / `test_batch_slots` / `test_gate_result` / `test_publish_batch`），
-`skill_selfcheck` 78 → **92 项**，单测 14 → **82 项**。
+新增 5 个行为自测（`test_batch_trace` / `test_batch_preflight` / `test_batch_slots` / `test_gate_result` / `test_publish_batch`），
+`skill_selfcheck` 78 → **92 项**、单测 14 → **82 项**（§3.1–§3.5 阶段值）；四轮审查修复后终值 **105 项 / 112 项**（见 §9.3）。
 
 ## 2. 五个提交
 
@@ -274,3 +274,33 @@ verdict='BYPASS' → 拒绝 ｜ '总判定: BYPASS ✅' → 拒绝 ｜ 'PASSED' 
 
 验证（第四轮修复后复跑）：`skill_selfcheck` **105 项 0 失败**、单测 **112 项 OK**、`v2_selfcheck` PASS、
 端到端脚本化试运行 17 步期望全中；`gate_lecture.py` 自 `c03baca` 起未改动（判据回归 11/11 继续成立）。
+
+## 10. 审查通过后的同步（2026-09-20）
+
+审查通过后按 §6.6 DoD 把技能同步到各安装副本；同步的是**同一份字节**：源仓 `skills/replicate-learning/`
+（99 个文件，排除 `__pycache__`）逐个文件 SHA256 比对，三处副本全部 **列表差异 0 / 内容差异 0**。
+
+| 位置 | 路径 | 状态 |
+|---|---|---|
+| 源仓库 | `D:\develop\workspace\replicate-learningV2` → `origin/master` | 已推送 `afcf8f7..eb2d28d`（+ 本文件的文档提交） |
+| WorkBuddy | `C:\Users\13610\.workbuddy\skills\replicate-learning` | 已覆盖 |
+| Codex | `D:\codexData\skills\replicate-learning`（`~/.codex/skills` 的落地目录） | 已覆盖 |
+| dsh-toolkit（工具快照库，私有 git） | `D:\Agent_Learnings\lg-ocr\文档\ocr\dsh-toolkit\skills\replicate-learning` | 提交 `ea26fcb` + `0b43f7d`，已推送 `origin/main` |
+
+**安装位实跑校验**（三处逐个跑，均在各自目录下执行）：
+
+```text
+python scripts/skill_selfcheck.py   # 检查项 105，失败 0 → PASS ✅
+python scripts/v2_selfcheck.py      # V2 self-check: PASS (6 contract entries)
+```
+
+**同轮修掉的文档失真**（本轮四轮修复把自检从 92 项加到 105 项、单测加到 112 项，两处文档没跟上）：
+
+- `skills/replicate-learning/docs/安装与执行边界.md`：92 项 / 单测 82 项 → **105 项 / 112 项**，并加一句"项数随版本增长，以脚本实际输出为准"（防下一次同类漂移）；
+- 根 `README.md`：徽章 92 → **105**、§二 "78 项技能自检" → **105 项**、§八/§九 "92 项" → **105 项**、单元测试 "81 项" → **112 项**、目录 "（16 个脚本）" → **（21 个脚本）**（实际 `scripts/` = 21 个工具 + 10 个 `test_*.py`）；
+- 本文件 §1 的两处阶段值（92 项 / 82 项）保留为历史，加注"终值见 §9.3"；同时修正 "新增 4 个行为自测" → **5 个**（列出的确实是 5 个）。
+
+> 判据 / 工具行为 / SSOT 均未改动，`GATE_VERSION` 仍为 v2.30；上述仅为文档数字与实跑对齐。
+> 未同步的地方也如实说明：本机不存在 `~/.agents/skills/replicate-learning`（历史文档里叫"安装位"）与
+> `~/.claude/skills/replicate-learning`，`~/.dsh/memories/pending-skills/` 下的技能建议不是安装副本，均未改动；
+> 宿主项目 `D:\ragent-official` 内没有技能脚本副本，因此"宿主项目内脚本副本"这一处本次为空。
