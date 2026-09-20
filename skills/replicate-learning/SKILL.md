@@ -28,7 +28,7 @@ description: 当用户要学习、逐批讲解或继续拆解本地或开源项�
 0. **计时**：开批先 `python scripts/batch_trace.py --file <批次目录>/trace.jsonl start --batch-id <本批号>`，各步用 `begin/end --phase prepare|investigate|write|inject|repair|gate|verify|publish` 记分步耗时，收尾 `report` 汇总。**只有脚本跑得出的耗时才算实测**；模型写作耗时由操作者按秒表并写明口径，没测就写"未实测"——不要从会话时间戳反推，也不要预报降幅。
 1. **定位**：读取被学习项目的 `AGENTS.md`、精简状态、覆盖矩阵和源码变化。首次运行才完成全库文件清单及系统地图；之后只增量更新。范围包含 Java、Python 及实际使用的配置、测试、脚本等文件；不要以语言划分教学深度。
 2. **备证据**：批量读取本批源码、真实调用方和相关测试，记录源码版本或脏工作树文件hash。用 `scripts/batch_manifest.py prepare` 生成本批文件清单，再生成骨架。阅读样例只取匹配本批语言与难点的短节；门禁指出特定缺陷才读对应事故与细则。
-3. **开批**：用 `scripts/new_batch.py` 从模板生成17节骨架；起笔就按当前完整判据版本写。用 `scripts/inject_source.py` 从真实源码注入代码和真实行号，教学解释另存注释计划。AI写因果、边界、回放和真实项目的AI协作示例，不手抄源码。
+3. **开批**：用 `scripts/new_batch.py` 从模板生成17节骨架；起笔就按当前完整判据版本写。用 `scripts/inject_source.py` 从真实源码注入代码和真实行号，教学解释另存注释计划。AI写因果、边界、回放和真实项目的AI协作示例，不手抄源码。**注入之前先跑 `scripts/batch_preflight.py`**：它复用闸门的同一套检查函数，直接在计划阶段报出 ★ 签名缺口、无注释连段与可补注的源文件行，并检查注释键是否为真实行号、是否落在注了也不生效的位置（Python 多行字符串/反斜杠续行）。预检 FAIL 先改计划，不要靠在闸门与注入之间反复试错。规则 ID 与结果 schema 见 `scripts/lecture_checks.py`。
 4. **组装与修复**：把完整的 `##` 章节分别写成片段，用 `scripts/assemble_batch.py --base <骨架.md> --part <章节.md> --out <批次.md>` 确定性组装；先检查围栏、标题、表格、占位，再运行 `scripts/gate_lecture.py <批次.md> --src <项目根>`。按失败规则ID只改对应片段或注释计划，再重组；同一原因的问题一次汇总。必要时用 `scripts/safe_edit.py`，不直接区间替换长篇源码块。
 5. **终检与续传**：终稿运行完整单批门禁、`scripts/batch_manifest.py check` 与语义审读；根据实际执行记录编译、单测、集成测试和未实测项。更新覆盖矩阵、索引、精简状态；普通教材批次不自动创建五类工程Issue日志。共享判据或工具变更时另跑全库回归。
 

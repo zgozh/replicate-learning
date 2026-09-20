@@ -988,6 +988,71 @@ def check_record_shape_sc(r):
     else:
         r.fail('记录类档位异常：strict=%s report=%s' % (vs, vr))
 
+def check_preflight(r):
+    """㉑ 开批预检的行为自测（方案 §3.2）：用**真实批次48 夹具**钉死验收数字。
+
+    为什么必须钉在真实夹具上：预检的价值就是"在注入之前说出闸门将要说什么"。
+    如果只用合成样本，改了闸门口径而预检悄悄跟不上，自检照样全绿——那正是它要防的事。
+    期望值抄自批次48 会话导出里的首跑闸门输出：★ 签名缺口 3 个、密度连段 5 处（8/10/10/8/10）。
+    """
+    sys.path.insert(0, HERE)
+    import batch_preflight as P          # noqa: E402
+    import lecture_checks as LC          # noqa: E402
+    import contextlib                    # noqa: E402
+
+    missing = LC.unknown_contract_ids()
+    if missing:
+        r.fail('预检规则 ID 指向了 SSOT 里不存在的条款：%s' % '、'.join(missing))
+    else:
+        r.ok('预检规则 ID 全部能在 spec/00-质量契约.json 找到对应条款')
+
+    fix = os.path.join(ROOT, 'tests', 'fixtures', 'batch48')
+    src = os.path.join(fix, 'project')
+    if not os.path.isdir(src):
+        r.fail('缺回归夹具 %s（预检的验收数字钉在真实批次48 上，夹具不能缺）' % src)
+        return
+
+    def run(plan_name):
+        out = tempfile.mktemp(suffix='.json')
+        argv = ['batch_preflight.py', '--src', src, '--plan', os.path.join(fix, plan_name),
+                '--manifest', os.path.join(fix, 'b48_manifest.json'), '--json', out]
+        old = sys.argv
+        sys.argv = argv
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                rc = P.main()
+        finally:
+            sys.argv = old
+        data = json.load(io.open(out, encoding='utf-8'))
+        os.unlink(out)
+        return rc, {c['id']: c for c in data['checks']}
+
+    rc, checks = run('b48_inject_plan_r1.json')
+    sig = checks['P-SIG']
+    density = checks['P-DENSITY']
+    methods = {'appendRow', 'sanitizeCell', 'appendSeparator'}
+    hit = {m for m in methods if m in json.dumps(sig, ensure_ascii=False)}
+    if rc != 0 and sig['status'] == LC.FAIL and hit == methods and len(density['findings']) == 5:
+        r.ok('预检：批次48 首轮计划 → ★ 签名缺口 3（%s）+ 密度连段 5 处（与当时闸门一致）'
+             % '、'.join(sorted(methods)))
+    else:
+        r.fail('预检与批次48 实录不符：rc=%s sig=%s(%s) density_findings=%d'
+               % (rc, sig['status'], sorted(hit), len(density['findings'])))
+
+    rc2, checks2 = run('b48_inject_plan_fixed.json')
+    if rc2 == 0 and checks2['P-DENSITY']['status'] == LC.PASS and checks2['P-SIG']['status'] == LC.PASS:
+        r.ok('预检：修复后的计划 → 0 缺口（PASS），且核验对象数 %d/%d 不为 0'
+             % (checks2['P-DENSITY']['checked'], checks2['P-SIG']['checked']))
+    else:
+        r.fail('预检对修复后计划仍报 FAIL（rc=%s）——预检与闸门口径已经不一致' % rc2)
+
+    try:
+        LC.make_check('P-DENSITY', LC.PASS, checked=0)
+        r.fail('结果 schema 允许「0 对象 PASS」——真空通过会重新长出来')
+    except ValueError:
+        r.ok('结果 schema：检查对象为 0 不许写 PASS（真空通过被封堵）')
+
+
 def main():
     print('=' * 88)
     print('技能文档一致性自检（skill_selfcheck.py）  根目录:', ROOT)
@@ -1033,6 +1098,8 @@ def main():
     check_record_shape_sc(r)
     print('\n⑳ sync_gate_result 实测块替换幂等（2.29 / BUG-S1）：不许每跑一次堆一张旧表')
     check_sync_idempotent(r)
+    print('\n㉑ 开批预检（方案 §3.2）：用真实批次48 夹具钉住验收数字')
+    check_preflight(r)
     print('\n' + '=' * 88)
     print('检查项 %d，失败 %d → %s' % (r.n, r.bad, 'PASS ✅' if r.bad == 0 else 'FAIL ❌'))
     print('=' * 88)
