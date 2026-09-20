@@ -180,5 +180,21 @@ class FinalVerificationTests(unittest.TestCase):
             self.assertTrue(rec["stamp_did_not_break_anything"])
 
 
+class GateAllRecordFileTests(unittest.TestCase):
+    """记录类文件声明了判据版本时，全库记分卡不许崩（原实现 `s_bad` 未定义 → NameError）。"""
+
+    def test_record_class_file_with_declared_version_does_not_crash_scan(self):
+        import gate_all
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            # 记录类文件 + 声明判据版本 ≥ 2.21 → 走 `s_bad.extend(...)` 分支（原实现此时 s_bad 还没定义）
+            (root / "批次0-整理批.md").write_text(
+                "# 整理批\n\n> 判据版本：v2.21\n\n正文，但没有状态行也没有未完成清单。\n",
+                encoding="utf-8")
+            rows = gate_all.scan(str(root), str(root))
+            self.assertEqual(len(rows), 1)
+            self.assertIn("记录类", rows[0]["struct"], rows[0])
+
+
 if __name__ == "__main__":
     unittest.main()

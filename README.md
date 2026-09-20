@@ -4,7 +4,7 @@
 > 默认交付**第一册项目源码与工程实现**；第二、三册需用户明确提出。每条源码结论都保留可复检的证据。
 
 [![判据版本](https://img.shields.io/badge/判据-v2.30-blue)](skills/replicate-learning/references/第一册质量细则.md)
-[![自检](https://img.shields.io/badge/selfcheck-78%20项%200%20失败-brightgreen)](skills/replicate-learning/scripts/skill_selfcheck.py)
+[![自检](https://img.shields.io/badge/selfcheck-92%20项%200%20失败-brightgreen)](skills/replicate-learning/scripts/skill_selfcheck.py)
 [![License](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE)
 
 ---
@@ -87,9 +87,15 @@ cp -r skills/replicate-learning ~/.agents/skills/
 
 ```bash
 cd ~/.workbuddy/skills/replicate-learning     # 换成你的实际安装路径
-python scripts/skill_selfcheck.py             # 期望：检查项 78，失败 0 → PASS ✅
+python scripts/skill_selfcheck.py             # 期望：检查项 92，失败 0 → PASS ✅
 python scripts/v2_selfcheck.py                # 期望：V2 self-check: PASS (6 contract entries)
 ```
+
+> 单元测试（可选，10 个 `test_*.py` 共 81 项）：
+> `python -m unittest discover -s scripts -p "test_*.py" -t scripts`
+>
+> Windows 提示：若把工具输出重定向到文件却看到 `UnicodeEncodeError`，说明用的是旧版本脚本——
+> 现行脚本入口已统一把 stdout/stderr 切到 UTF-8（`lecture_checks.configure_stdio()`）。
 
 ---
 
@@ -126,7 +132,23 @@ NOTES/
 
 > **续传原则**：进度**只认状态文件**，不认聊天记忆。上下文不足时先落盘再停，下次从"下一步入口"继续。
 
-**提速路径**：第一次做全库扫描与四份基础地图；每批只读取本批源码、调用方与相关测试，用 `batch_manifest.py` 固定这些文件的 hash。`new_batch.py` 先生成 17 节骨架，正文按完整章节写成片段，用 `assemble_batch.py` 组装；失败只改对应片段。终稿运行 `gate_lecture.py`、manifest 检查和人工语义审读。普通批次无需重读全部黄金样例或运行全库闸门；修改公共判据、批量收尾时再跑全库回归。Java 和 Python 执行同一事实核对标准，注释语法按语言选择。
+**提速路径**（第二轮提速重构后的实际流水线，每一步都有工具、都先验后写）：
+
+```text
+batch_trace start                       计时开批（分步耗时：准备/写作/注入/修复/终检/验证/归档）
+→ batch_manifest prepare                固定本批源码 hash
+→ new_batch --plan --batch-json         17 节骨架 + 每件**稳定源码槽位** + batch.json/annotations.json
+→ batch_preflight                       注入前预检：★ 签名缺口 / 密度连段 / 坏注释键 / 片段参数
+→ 模型写分片（parts/*.md）               解释、因果、回放、⑫
+→ batch_build                           骨架 + 分片 + 注释计划 → 重建终稿（重复构建逐字节幂等）
+→ gate_lecture --json                   结构化结果（规则 ID / 状态 / 核验对象数 / 哈希）
+→ sync_gate_result --result-json --apply 验哈希后盖章 ⑯，盖章后复跑并记录最终哈希
+→ publish_batch --record                一份批次记录更新覆盖矩阵/总索引/阶段页/状态（冲突零写入）
+```
+
+第一次做全库扫描与四份基础地图；每批只读本批源码、调用方与相关测试。普通批次无需重读全部黄金样例
+（开批一次取最小样例包，闸门报哪条形态再按规则 ID 补读）或运行全库闸门；修改公共判据、批量收尾时再跑全库回归。
+Java 和 Python 执行同一事实核对标准，注释语法与检查档位按语言选择。
 
 ---
 
@@ -210,7 +232,8 @@ Understand → Investigate → Predict → Plan → Delegate → Review → Test
 
 ## 七、批次教材的十七节结构
 
-每批教材统一为 **16 节（①~⑯）+ 索引节**。节序的权威来源是 `references/批次讲解全文模板.md`，不是任何历史批次。
+每批教材统一为 **17 节（①~⑯ + 索引节）**。节序的权威来源是 `references/批次讲解全文模板.md`
+（由 `new_batch.py` 抽取骨架），不是任何历史批次。
 
 | 节 | 内容 |
 |---|---|
@@ -245,7 +268,7 @@ Understand → Investigate → Predict → Plan → Delegate → Review → Test
 ### 闸门七项（每批落盘后、commit 前必跑）
 
 ```bash
-python scripts/gate_lecture.py <批次.md> --src <源码根>
+python scripts/gate_lecture.py <批次.md> --src <源码根> --json <结果.json>   # 结构化结果（推荐）
 ```
 
 | 项 | 查什么 |
@@ -259,6 +282,19 @@ python scripts/gate_lecture.py <批次.md> --src <源码根>
 | ⑥ 散文符号真实性 | 正文里的 `Xxx.java:NN`、件标题声明的 `.java` 等必须真实存在 |
 
 退出码非 0 即不过关，首行打印判据版本。**任何一项不过关当场修、修完复跑，全过才允许 commit。**
+`--json` 出的是**结构化结果**：每条检查带稳定规则 ID（挂 `spec/00-质量契约.json` 条款）、五个互斥状态
+（`PASS/FAIL/REPORT/NOT_CHECKED/ERROR`）、**核验对象数**与定位；**核验对象为 0 记 `NOT_CHECKED`，不算通过**。
+⑯ 段由它渲染：`sync_gate_result.py --result-json <结果.json> --apply`（先验契约版本与正文/清单哈希，
+盖章后自动复跑一次完整闸门并单独记录最终哈希）。
+
+### 开批之前先预检（省掉"注入后才发现"的往返）
+
+```bash
+python scripts/batch_preflight.py --src <源码根> --plan <注释计划.json> [--manifest <清单.json>] [--lecture <批次.md>]
+```
+它 `import` 闸门本身，用同一套函数先算一遍：★ 签名缺口几个、哪些块有多长无注释连段、该补哪几行，
+外加注释键是否为真实行号、是否落在 Python 多行字符串/反斜杠续行这类"注了也不生效"的位置。
+**预检说什么，终检就说什么**——不再靠"跑闸门试错"。
 
 ### 四层治理
 
@@ -267,7 +303,7 @@ python scripts/gate_lecture.py <批次.md> --src <源码根>
 | **单一真源** | `spec/00-质量契约.json` | 每条要求 = id / 层级 / 判据原文 / gate 锚点 / SKILL 锚点 / 模板锚点 / 血证编号 |
 | **血证档案** | `spec/血证档案.md` | H1~H27：每条规则背后的真实事故。**想放宽判据前必读** |
 | **判据版本** | `references/第一册质量细则.md` §6.6 | 当前 **v2.30**；任何判据变更必须走三件套 |
-| **技能自检** | `scripts/skill_selfcheck.py` | 78 项，对账 SSOT ↔ 质量细则 ↔ 模板 ↔ gate，防规则丢失 |
+| **技能自检** | `scripts/skill_selfcheck.py` | 92 项，对账 SSOT ↔ 质量细则 ↔ 模板 ↔ gate，防规则丢失 |
 
 **判据变更三件套**（缺一即视为未完成）：
 
@@ -280,25 +316,31 @@ python scripts/gate_lecture.py <批次.md> --src <源码根>
 
 ---
 
-## 九、自带工具（16 个脚本）
+## 九、自带工具（21 个脚本）
 
 | 脚本 | 干什么 |
 |---|---|
-| `gate_lecture.py` | 闸门：一次跑完七项判定，输出判据版本与缺口 |
+| `gate_lecture.py` | 闸门：一次跑完七项判定，输出判据版本与缺口；`--json` 出**结构化结果**（稳定规则 ID / 状态 / 核验对象数 / 哈希） |
 | `gate_all.py` | 全库记分卡 + 判据回归比对（`--baseline` 逐字段比对，变化即 FAIL） |
-| `skill_selfcheck.py` | 技能文档一致性自检（SSOT ↔ 质量细则 ↔ 模板 ↔ gate 对账，78 项） |
+| `skill_selfcheck.py` | 技能文档一致性自检（SSOT ↔ 质量细则 ↔ 模板 ↔ gate 对账，92 项） |
 | `v2_selfcheck.py` | V2 入口与产物契约检查 |
-| `new_batch.py` | 新批次脚手架：从模板生成 17 节骨架（节数/⑫ 八条/⑯ 空表由构造保证） |
+| `batch_trace.py` | 批次分步计时器（JSONL）：把"一小时到底花在哪"拆成准备/写作/注入/修复/终检/验证/归档 |
+| `batch_preflight.py` | **开批预检**：注入前就用闸门同口径报出 ★ 签名缺口、密度连段与可补注行、坏注释键 |
+| `new_batch.py` | 新批次脚手架：从模板生成 17 节骨架；`--plan` 时逐件写**稳定源码槽位**并产出 `batch.json`/`annotations.json` |
+| `batch_build.py` | 从「骨架 + 分片 + 注释计划」**重建终稿**（`--dry-run` 预览、`--check` 比对、失败不写盘） |
+| `publish_batch.py` | 用**一份批次记录**更新覆盖矩阵/总索引/阶段页/状态：先验后写、冲突零写入、幂等、`--git-add` 只加点名文件 |
 | `study_scope.py` | 默认第一册与显式扩展册范围解析、旧状态迁移 |
 | `batch_manifest.py` | 本批 Java/Python 等源文件 hash 清单与变更检查 |
 | `assemble_batch.py` | 把 17 节骨架和完整章节片段确定性组装，局部返工只换片段 |
-| `inject_source.py` | **源码块注入**：按 plan 从源文件逐行取码 + 打真实行号（① 保真与 ④ 行号是"注入"出来的） |
+| `inject_source.py` | **源码块注入**：优先按槽位（块身份 = 槽位 ID + 源路径 + sha256）注入，旧 `anchor/contains` 兼容并告警 |
+| `lecture_checks.py` | 检查结果的统一 schema 与规则登记表（状态词表 / SSOT 条款映射 / 哈希绑定校验） |
 | `safe_edit.py` | 局部安全编辑工具：围栏护栏 + 整节重写，跨围栏替换一律拒绝 |
 | `callsite.py` | 调用点提取：输出「声明 / 使用调用点 / 仅提及」三段（写【怎么用】的证据来源） |
 | `fix_lineno.py` | 行号标注修正：重写真行号，并把作废的 `// :N` 升级为 `:Lnn` |
 | `annotate_gaps.py` | ③ 注释缺口定位器：算出满足判据所需的最小标注点集合 |
-| `sync_gate_result.py` | 把闸门实跑结果写进 ⑯ 段（幂等），数字由闸门生成、不许手抄 |
+| `sync_gate_result.py` | 把闸门结果写进 ⑯ 段：`--result-json` 从结构化结果渲染，验哈希后才盖章，盖章后复跑并记最终哈希 |
 | `fix_circled_sections.py` | 修复一级节标题带圈数字丢失（丢码会让整节检查静默失效） |
+| `polish_fix.py` | ⑥/⑫ 排版整形（断段、列表化、标记段空行） |
 
 > 工具随技能发布：规程里写着"必须做"的步骤，其执行工具必须在 `scripts/` 下、被文档引用、被自检覆盖。留在会话临时目录里的脚本等于没有。
 
@@ -314,15 +356,16 @@ replicate-learning/
 ├── docs/                          方案与验收过程文档
 ├── gate_all.json                  全库闸门记分卡样例
 └── skills/replicate-learning/     ★ 要安装的就是这个目录
-    ├── SKILL.md                   入口 + 意图路由（842 行）
-    ├── docs/              (3)     安装与执行边界、通用学习方法、V2 试运行手册
-    ├── examples/          (3)     黄金样例（Java / Python / 工程任务）
-    ├── references/       (23)     执行协议 + 全部讲解与工程模板
-    ├── scripts/          (12)     上表 12 个工具
-    └── spec/              (7)     质量契约 SSOT、血证档案、操作手册、阶段工作流
+    ├── SKILL.md                   入口 + 意图路由（58 行：可执行入口，长表与细则按需读）
+    ├── docs/              (3)     安装与执行边界、通用学习方法、V2 试运行手册（archive/）
+    ├── examples/          (2)     黄金样例（Java / Python）
+    ├── references/       (30)     执行协议 + 全部讲解与工程模板 + 黄金样例节选
+    ├── scripts/          (21)     上表 21 个工具（另有 10 个 test_*.py 行为自测）
+    ├── spec/              (7)     质量契约 SSOT、血证档案、操作手册、阶段工作流
+    └── tests/fixtures/            回归夹具（batch48 真实批次 + py_mini 合成边界用例）
 ```
 
-入口是 `skills/replicate-learning/SKILL.md`。触发后先按意图读 `references/V2执行协议.md`，再按任务类型读对应模板——**不要求把全部文档一次性装入上下文**。
+入口是 `skills/replicate-learning/SKILL.md`。触发后先按意图读 `references/第一册执行协议.md`（扩展册看 `V2执行协议.md`），再按任务类型读对应模板——**不要求把全部文档一次性装入上下文**。
 
 ---
 

@@ -90,6 +90,10 @@ def scan(root, src):
                          if r["lost"] is not None and r["snap_lost"] is not None)
             den_all = G.check_density(blocks)
             sig = G.check_sig(blocks, by_class)
+            # `s_bad` 必须在**记录类分支之前**初始化：原实现把它放在下面第 104 行，
+            # 而记录类分支（第 97 行）会先 `s_bad.extend(...)` → 只要一份记录类文件声明了
+            # 「判据版本 ≥ 2.21」，scan() 就 **NameError 崩掉整个记分卡**（不是报错，是崩）。
+            s_bad = []
             _is_rec, _rec_why = G.is_record(lines, os.path.basename(p))
             if _is_rec:
                 _rec_bad = G.check_record_shape(lines)
@@ -101,7 +105,6 @@ def scan(root, src):
             if not _is_lec:
                 NONLEC.append((rel, _lec_why))
             st = G.check_structure(lines, _is_lec)
-            s_bad = []
             if st["is_batch"]:
                 if st["sections"] != 17:
                     s_bad.append("节数%d" % st["sections"])
