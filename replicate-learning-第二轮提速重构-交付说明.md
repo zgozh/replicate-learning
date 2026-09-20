@@ -278,7 +278,7 @@ verdict='BYPASS' → 拒绝 ｜ '总判定: BYPASS ✅' → 拒绝 ｜ 'PASSED' 
 ## 10. 审查通过后的同步（2026-09-20）
 
 审查通过后按 §6.6 DoD 把技能同步到各安装副本；同步的是**同一份字节**：源仓 `skills/replicate-learning/`
-（99 个文件，排除 `__pycache__`）逐个文件 SHA256 比对，三处副本全部 **列表差异 0 / 内容差异 0**。
+（99 个文件，排除 `__pycache__`）逐个文件 SHA256 比对，四处副本全部 **列表差异 0 / 内容差异 0**。
 
 | 位置 | 路径 | 状态 |
 |---|---|---|
@@ -286,8 +286,9 @@ verdict='BYPASS' → 拒绝 ｜ '总判定: BYPASS ✅' → 拒绝 ｜ 'PASSED' 
 | WorkBuddy | `C:\Users\13610\.workbuddy\skills\replicate-learning` | 已覆盖 |
 | Codex | `D:\codexData\skills\replicate-learning`（`~/.codex/skills` 的落地目录） | 已覆盖 |
 | dsh-toolkit（工具快照库，私有 git） | `D:\Agent_Learnings\lg-ocr\文档\ocr\dsh-toolkit\skills\replicate-learning` | 提交 `ea26fcb` + `0b43f7d`，已推送 `origin/main` |
+| DSH 用户技能库 | `C:\Users\13610\.agents\skills\replicate-learning` | **新增**（该目录此前没有本技能；装后 DSH 会话的技能目录立即出现 `replicate-learning`，即该路径确实是 DSH 的用户级技能根） |
 
-**安装位实跑校验**（三处逐个跑，均在各自目录下执行）：
+**安装位实跑校验**（四处逐个跑，均在各自目录下执行）：
 
 ```text
 python scripts/skill_selfcheck.py   # 检查项 105，失败 0 → PASS ✅
@@ -301,6 +302,8 @@ python scripts/v2_selfcheck.py      # V2 self-check: PASS (6 contract entries)
 - 本文件 §1 的两处阶段值（92 项 / 82 项）保留为历史，加注"终值见 §9.3"；同时修正 "新增 4 个行为自测" → **5 个**（列出的确实是 5 个）。
 
 > 判据 / 工具行为 / SSOT 均未改动，`GATE_VERSION` 仍为 v2.30；上述仅为文档数字与实跑对齐。
-> 未同步的地方也如实说明：本机不存在 `~/.agents/skills/replicate-learning`（历史文档里叫"安装位"）与
-> `~/.claude/skills/replicate-learning`，`~/.dsh/memories/pending-skills/` 下的技能建议不是安装副本，均未改动；
+> 未同步的地方也如实说明：`~/.claude/skills/replicate-learning` 不存在（Claude Code 的用户级技能目录只有
+> `find-skills` / `learned` / `new-project-bootstrap` / `skill-creator` / `ui-ux-pro-max` 五项），本次未新建；
+> `~/.dsh/memories/pending-skills/` 下的技能建议是待确认队列、不是安装副本，未改动；
+> `~/.agents/.skill-lock.json` 只登记"从 GitHub 源安装"的技能（`find-skills` 等），本技能是本地作者技能，无需登记（装后 DSH 已能直接识别）；
 > 宿主项目 `D:\ragent-official` 内没有技能脚本副本，因此"宿主项目内脚本副本"这一处本次为空。
