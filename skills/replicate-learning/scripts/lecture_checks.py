@@ -216,6 +216,13 @@ def render(result, verbose=True):
     return "\n".join(lines)
 
 
+# 一份"结果完整"所必需的核心检查项：缺任何一项都说明报告不完整，不许拿它去盖章或发布。
+# 放在这里是为了让 sync_gate_result.py（盖章）与 publish_batch.py（发布）用**同一份清单**——
+# 两处各写一份就会漂移：改了这边的必需项、那边照旧放行。
+REQUIRED_RESULT_CHECKS = ("G-STRUCT", "G-FIDELITY", "G-REVERSE", "G-DENSITY", "G-LINENO",
+                          "G-USAGE", "G-PROSE")
+
+
 def validate_result(result, *, expect_lecture_sha256=None, expect_manifest_sha256=None,
                     expect_contract_version=None, required_ids=None):
     """盖章前的自检：结果必须与"现在要盖章的这份内容"对得上。返回错误列表（空 = 可盖章）。

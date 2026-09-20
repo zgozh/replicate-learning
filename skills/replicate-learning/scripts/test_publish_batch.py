@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import lecture_checks as LC
 import publish_batch as P
+from test_gate_result import good_result
 
 LEDGERS = {
     "NOTES/项目文件覆盖矩阵.md": "# 覆盖矩阵\n\n| 文件 | 状态 |\n|---|---|\n| 旧件 | 已讲 |\n\n尾注。\n",
@@ -40,9 +41,13 @@ def make_project(tmp, lecture=True):
     lec.write_text("# 阶段3 · 批次48\n\n正文。\n", encoding="utf-8")
     final = root / "NOTES" / ".replicate-learning" / "b48.final.json"
     final.parent.mkdir(parents=True, exist_ok=True)
+    # 一份**健康**的最终记录：发布入口会逐项核对 pass / exit_code / rolled_back /
+    # stamp_did_not_break_anything / contract_version / final_lecture_sha256（审查第二轮要求）
     final.write_text(json.dumps({
-        "schema_version": LC.SCHEMA_VERSION, "pass": True,
-        "final_lecture_sha256": LC.sha256_file(lec), "verdict": "总判定: PASS",
+        "schema_version": LC.SCHEMA_VERSION, "pass": True, "exit_code": 0,
+        "rolled_back": False, "stamp_did_not_break_anything": True,
+        "contract_version": LC.load_contract()["version"],
+        "final_lecture_sha256": LC.sha256_file(lec), "verdict": "总判定: PASS ✅",
     }, ensure_ascii=False), encoding="utf-8")
     return root, lec, final
 
@@ -233,6 +238,78 @@ class PublishTests(unittest.TestCase):
         before = self.snapshot()
         self.assertEqual(self.run_publish(["--apply"]), 1)
         self.assertEqual(self.snapshot(), before)
+
+    # ── 审查第二轮：发布入口必须用**完整结论校验**，不能只看单个字段 ──
+    def _final(self, **overrides):
+        rec = {"schema_version": LC.SCHEMA_VERSION, "pass": True, "exit_code": 0,
+               "rolled_back": False, "stamp_did_not_break_anything": True,
+               "contract_version": LC.load_contract()["version"],
+               "final_lecture_sha256": LC.sha256_file(self.lec)}
+        rec.update(overrides)
+        self.final.write_text(json.dumps(rec, ensure_ascii=False), encoding="utf-8")
+
+    def test_gate_final_with_nonzero_exit_code_is_refused(self):
+        """pass=true 但 exit_code=1（复检进程其实没通过）→ 不得发布。"""
+        self._final(exit_code=1, stamp_did_not_break_anything=False)
+        before = self.snapshot()
+        self.assertEqual(self.run_publish(["--apply"]), 1)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_gate_final_marked_rolled_back_is_refused(self):
+        self._final(rolled_back=True, stamp_did_not_break_anything=False)
+        self.assertEqual(self.run_publish(["--apply"]), 1)
+
+    def test_gate_final_with_verification_error_is_refused(self):
+        self._final(verification_error="JSONDecodeError: boom")
+        self.assertEqual(self.run_publish(["--apply"]), 1)
+
+    def test_gate_final_with_stale_contract_version_is_refused(self):
+        self._final(contract_version="2.17")
+        self.assertEqual(self.run_publish(["--apply"]), 1)
+
+    def test_healthy_gate_final_is_accepted(self):
+        self._final()
+        self.assertEqual(self.run_publish(["--apply"]), 0)
+
+    def test_direct_gate_result_entry_uses_full_validation(self):
+        """旧的直接发布入口：`pass=false / verdict=FAIL` 但无阻塞项的记录也必须被拒。"""
+        forged = good_result(LC.sha256_file(self.lec))
+        for c in forged["checks"]:
+            c["status"] = LC.PASS
+            c["checked"] = c.get("checked") or 1
+        forged["pass"] = False
+        forged["pass_"] = False
+        forged["verdict"] = "总判定: FAIL ❌"
+        gr = self.root / "gate_result.json"
+        gr.write_text(json.dumps(forged, ensure_ascii=False), encoding="utf-8")
+        rec = make_record(self.root, self.lec, self.final)
+        rec.pop("gate_final")
+        rec["gate_result"] = "gate_result.json"
+        self.write_record(rec)
+        before = self.snapshot()
+        self.assertEqual(self.run_publish(["--apply"]), 1)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_direct_gate_result_entry_accepts_a_healthy_result(self):
+        gr = self.root / "gate_result.json"
+        gr.write_text(json.dumps(good_result(LC.sha256_file(self.lec)), ensure_ascii=False),
+                      encoding="utf-8")
+        rec = make_record(self.root, self.lec, self.final)
+        rec.pop("gate_final")
+        rec["gate_result"] = "gate_result.json"
+        self.write_record(rec)
+        self.assertEqual(self.run_publish(["--apply"]), 0)
+
+    def test_direct_gate_result_entry_needs_the_required_checks(self):
+        forged = good_result(LC.sha256_file(self.lec))
+        forged["checks"] = [c for c in forged["checks"] if c["id"] != "G-DENSITY"]
+        (self.root / "gate_result.json").write_text(json.dumps(forged, ensure_ascii=False),
+                                                    encoding="utf-8")
+        rec = make_record(self.root, self.lec, self.final)
+        rec.pop("gate_final")
+        rec["gate_result"] = "gate_result.json"
+        self.write_record(rec)
+        self.assertEqual(self.run_publish(["--apply"]), 1)
 
     def test_duplicate_master_files_are_refused(self):
         rec = make_record(self.root, self.lec, self.final)

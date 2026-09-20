@@ -1224,8 +1224,17 @@ def check_publish(r):
         lec = os.path.join(root, 'NOTES', '批次48.md')
         io.open(lec, 'w', encoding='utf-8', newline='').write('# 批次48\n\n正文。\n')
         final = os.path.join(root, 'NOTES', 'b48.final.json')
-        io.open(final, 'w', encoding='utf-8', newline='').write(json.dumps(
-            {"pass": True, "final_lecture_sha256": LC.sha256_file(lec)}, ensure_ascii=False))
+
+        def healthy_final(**override):
+            rec = {"pass": True, "exit_code": 0, "rolled_back": False,
+                   "stamp_did_not_break_anything": True,
+                   "contract_version": LC.load_contract()["version"],
+                   "final_lecture_sha256": LC.sha256_file(lec)}
+            rec.update(override)
+            io.open(final, 'w', encoding='utf-8', newline='').write(
+                json.dumps(rec, ensure_ascii=False))
+
+        healthy_final()
 
         def record(targets):
             return {"schema_version": 1, "project_root": root, "batch_id": "stage3-b48",
@@ -1296,6 +1305,18 @@ def check_publish(r):
                 r.fail('发布器：同一文件的多条更新互相覆盖了 → %r' % text[-80:])
         else:
             r.fail('发布器：同一文件的多条更新执行失败')
+
+        # 发布入口必须核对**完整结论**：最终记录 pass=true 但退出码非 0 / 标记已回滚都不许发布
+        before_final = io.open(final, encoding='utf-8').read()
+        for tag, override in (('exit_code=1', {"exit_code": 1, "stamp_did_not_break_anything": False}),
+                              ('rolled_back=true', {"rolled_back": True,
+                                                    "stamp_did_not_break_anything": False})):
+            healthy_final(**override)
+            if run(record(good)) != 0:
+                r.ok('发布器：最终记录 %s → 拒绝发布（未通过的批次不得发布）' % tag)
+            else:
+                r.fail('发布器：最终记录 %s 仍被接受——发布入口的结论校验有缺口' % tag)
+        io.open(final, 'w', encoding='utf-8', newline='').write(before_final)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

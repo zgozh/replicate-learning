@@ -141,9 +141,9 @@
 cd skills/replicate-learning
 
 # 全量自检与单测
-python scripts/skill_selfcheck.py          # 期望：检查项 94，失败 0 → PASS
+python scripts/skill_selfcheck.py          # 期望：检查项 96，失败 0 → PASS
 python scripts/v2_selfcheck.py             # 期望：PASS (6 contract entries)
-python -m unittest discover -s scripts -p "test_*.py" -t scripts   # 期望：90 项 OK
+python -m unittest discover -s scripts -p "test_*.py" -t scripts   # 期望：101 项 OK
 
 # 预检：首轮计划必须报出 3 个 ★ 签名缺口 + 5 处密度连段；修复后计划必须 0 缺口
 python scripts/batch_preflight.py --src tests/fixtures/batch48/project \
@@ -210,3 +210,23 @@ python scripts/batch_trace.py --file <批次目录>/trace.jsonl report
 
 验证（修复后复跑）：`skill_selfcheck` **94 项 0 失败**（㉓㉔ 各新增一条断言）、单测 **90 项 OK**、`v2_selfcheck` PASS、
 端到端脚本化试运行 17 步期望全中。
+
+### 9.1 第二轮审查（发布入口 + 异常回滚）
+
+| # | 审查意见 | 复现 | 修复 | 回归测试 |
+|---|---|---|---|---|
+| 5 | **发布入口没有使用完整结论校验**（`publish_batch.py`） | ① `gate_result` 写 `pass=false`/`verdict=FAIL` 但检查列表无阻塞项 → 被接受；② `gate_final` 写 `pass=true` 但 `exit_code=1`（哪怕 `rolled_back=true`）→ 被接受 | `check_evidence` 重写：**`gate_final`** 逐项要求 `pass=true`、`exit_code=0`、`rolled_back` 不为真、`stamp_did_not_break_anything` 不为假、`final_lecture_sha256` 等于讲义当前哈希、`contract_version` 等于当前版本、无 `verification_error`/`result_read_error`；**`gate_result`（旧直接入口）** 改调 `lecture_checks.validate_result` 做完整校验（schema/契约/正文哈希/清单哈希/必需检查项/无阻塞/顶层结论自洽）。必需检查清单收敛为 `lecture_checks.REQUIRED_RESULT_CHECKS`，盖章与发布**共用同一份**，避免两处漂移 | `test_gate_final_with_nonzero_exit_code_is_refused`、`test_gate_final_marked_rolled_back_is_refused`、`test_gate_final_with_verification_error_is_refused`、`test_gate_final_with_stale_contract_version_is_refused`、`test_healthy_gate_final_is_accepted`、`test_direct_gate_result_entry_uses_full_validation`、`test_direct_gate_result_entry_accepts_a_healthy_result`、`test_direct_gate_result_entry_needs_the_required_checks`；`skill_selfcheck` ㉔ 组加 exit_code / rolled_back 两条拒绝断言 |
+| 6 | **复检异常路径会绕过回滚**（`sync_gate_result.py`） | 复检读到损坏 JSON（或复检自身抛异常）→ 异常向上冒泡，讲义留在**已盖章**状态 | `verify_final` 读取结果文件改为 `try/except (ValueError, OSError)` → 记 `result_read_error` 并按"复检失败"处理（不抛）；`main` 再把整个复检包进 `try/except BaseException`，任何异常都走回滚；`restore()` 失败**不再抛异常**而是返回 False，并打印"请立刻从 `.bak` 恢复"，最终记录带 `rollback_ok` | `test_rolls_back_even_when_verification_itself_raises`（打桩让复检抛 `OSError` → 断言字节级回滚 + `verification_error` 入档）、`test_corrupt_final_result_file_is_treated_as_failure`（半截 JSON → 不抛、判失败、`result_read_error` 入档）、`test_restore_reports_failure_instead_of_raising` |
+
+定向复现（CLI 实跑，本次修复后）：
+
+```text
+健康最终记录（预期 rc=0）                                    rc=0
+gate_final: pass=true 但 exit_code=1（预期拒绝）             rc=1  [ABORT] …exit_code=1…stamp_did_not_break_anything=false…
+gate_final: rolled_back=true（预期拒绝）                     rc=1  [ABORT] …rolled_back=true（记录显示盖章后复检失败并已回滚）…
+gate_result: pass=false/verdict=FAIL 无阻塞项（预期拒绝）     rc=1  [ABORT] 门禁结果不能作为发布依据（完整校验未通过）
+gate_result: 健康结果（预期 rc=0）                           rc=0
+```
+
+验证（第二轮修复后复跑）：`skill_selfcheck` **96 项 0 失败**、单测 **101 项 OK**、`v2_selfcheck` PASS、
+端到端脚本化试运行 17 步期望全中；`gate_lecture.py` 仍未改动（`git diff c03baca -- …/gate_lecture.py` 为空）。

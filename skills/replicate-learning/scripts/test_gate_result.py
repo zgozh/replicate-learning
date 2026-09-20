@@ -163,6 +163,63 @@ class ResultStampingTests(unittest.TestCase):
         self.assertTrue(any("结论与检查项矛盾" in p
                             for p in LC.validate_result(result)))
 
+    def test_rolls_back_even_when_verification_itself_raises(self):
+        """审查第二轮：复检过程**抛异常**（结果文件损坏等）也必须回滚，不能绕过还原。"""
+        from unittest import mock
+        bad = ("# 阶段测试批\n\n> 判据版本：v2.30\n\n"
+               "## ⑯ 教材质量自检\n\n**判据版本：v2.30**（本批按此版判据验收）。\n\n## 索引节\n\n尾注。\n")
+        self.doc.write_text(bad, encoding="utf-8")
+        self.write_result(good_result(LC.sha256_file(self.doc)))
+        before = self.doc.read_bytes()
+
+        def boom(*_a, **_k):
+            raise OSError("模拟复检自身出错（磁盘/权限/子进程异常）")
+
+        argv = sys.argv
+        sys.argv = ["sync_gate_result.py", str(self.doc), "--src", str(self.root),
+                    "--result-json", str(self.result_path), "--apply",
+                    "--final-json", str(self.root / "final.json")]
+        try:
+            with mock.patch.object(S, "verify_final", boom):
+                rc = S.main()
+        finally:
+            sys.argv = argv
+        self.assertEqual(rc, 1)
+        self.assertEqual(self.doc.read_bytes(), before, "复检抛异常时也必须回滚讲义")
+        rec = json.loads((self.root / "final.json").read_text(encoding="utf-8"))
+        self.assertTrue(rec["rolled_back"])
+        self.assertIn("模拟复检自身出错", rec["verification_error"])
+
+    def test_corrupt_final_result_file_is_treated_as_failure(self):
+        """复检读到的结果文件是半截/损坏 JSON 时：不抛异常，按未通过处理。"""
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            doc = root / "plain.md"
+            doc.write_text("# 普通文档\n\n正文。\n", encoding="utf-8")
+            jout = str(doc) + ".gate-final.json"
+
+            class FakeProc:
+                returncode = 0
+                stdout = "总判定: PASS ✅\n"
+                stderr = ""
+
+            def fake_run(cmd, **kwargs):
+                Path(jout).write_text("{半截的 JSON", encoding="utf-8")
+                return FakeProc()
+
+            with mock.patch.object(S.subprocess, "run", fake_run):
+                code, rec = S.verify_final(str(doc), str(root), None,
+                                           {"lecture_sha256": "a" * 64})
+            self.assertNotEqual(code, 0, rec)
+            self.assertFalse(rec["stamp_did_not_break_anything"])
+            self.assertIn("result_read_error", rec)
+
+    def test_restore_reports_failure_instead_of_raising(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = str(Path(tmp) / "sub" / "not-there.md")   # 父目录不存在 → 写失败
+            self.assertFalse(S.restore(missing, b"x"))
+
     def test_rolls_back_when_post_stamp_verification_fails(self):
         """盖章后复检失败必须**自动还原讲义**（审查发现的第三处缺陷）。
 

@@ -46,7 +46,8 @@ NOTE_RE = re.compile(r'^>\s*本表由\s*`scripts/sync_gate_result\.py`')
 VERLINE_RE = re.compile(r'^\*\*判据版本：v?[\d.]+\*\*')
 
 # 盖章所需的最低检查集合：少任何一项都说明结果不完整（不许拿半份报告盖章）
-REQUIRED_CHECKS = ("G-STRUCT", "G-FIDELITY", "G-REVERSE", "G-DENSITY", "G-LINENO", "G-USAGE", "G-PROSE")
+# 清单本体在 lecture_checks（与 publish_batch 共用同一份，避免两处漂移）
+REQUIRED_CHECKS = LC.REQUIRED_RESULT_CHECKS
 
 STATUS_ZH = {LC.PASS: "通过", LC.FAIL: "**不通过**", LC.REPORT: "报告档",
              LC.NOT_CHECKED: "未检查", LC.ERROR: "**检查器出错**"}
@@ -203,20 +204,28 @@ def verify_final(lecture, src, final_json, result):
 
     判定 = **进程退出码为 0** 且结构化结果 `pass=true`（两者都要）：只看 `pass` 会漏掉
     "检查器崩了但结果文件是旧的/空的"这类情况；只看退出码则丢掉了对象数等信息。
+
+    读取损坏/半截的结果文件（闸门被杀、磁盘写了一半）**不抛异常**，而是记成"复检失败"——
+    抛异常会让调用方跳过回滚，把改动过的讲义留在盘上（正是"失败不动原稿"最怕的形态）。
     """
     jout = lecture + '.gate-final.json'
     p = subprocess.run([sys.executable, os.path.join(HERE, 'gate_lecture.py'), lecture,
                         '--src', src, '--json', jout],
                        capture_output=True, text=True, encoding='utf-8', errors='replace')
-    final = None
+    final, read_error = None, None
     if os.path.isfile(jout):
-        final = json.load(io.open(jout, encoding='utf-8'))
+        try:
+            final = json.load(io.open(jout, encoding='utf-8'))
+        except (ValueError, OSError) as exc:
+            read_error = '%s: %s' % (type(exc).__name__, exc)
+        os.unlink(jout)
+    elif os.path.isfile(jout):
         os.unlink(jout)
     verdict = None
     for line in (p.stdout or '').split('\n'):
         if line.startswith('总判定:'):
             verdict = line.strip()
-    ok = bool(final and final.get('pass')) and p.returncode == 0
+    ok = bool(final and final.get('pass')) and p.returncode == 0 and read_error is None
     rec = {
         'schema_version': LC.SCHEMA_VERSION,
         'stamped_at': datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='seconds'),
@@ -231,8 +240,12 @@ def verify_final(lecture, src, final_json, result):
         'stamp_did_not_break_anything': ok,
         'rolled_back': False,
     }
+    if read_error:
+        rec['result_read_error'] = read_error
     if not ok:
-        print('[FAIL] 盖章后复跑闸门未通过（退出码 %s，pass=%s）——准备回滚讲义' % (p.returncode, rec['pass']))
+        print('[FAIL] 盖章后复跑闸门未通过（退出码 %s，pass=%s%s）——准备回滚讲义'
+              % (p.returncode, rec['pass'],
+                 '，结果文件读取失败：%s' % read_error if read_error else ''))
     return (1 if not ok else 0), rec
 
 
@@ -246,12 +259,20 @@ def write_final_record(final_json, rec):
 
 
 def restore(lecture, data):
-    """把讲义恢复成盖章前的内容（tmp → os.replace），用于"盖章后复检失败"的回滚。"""
-    tmp = lecture + '.rollback'
-    io.open(tmp, 'wb').write(data)
-    os.replace(tmp, lecture)
-    print('   ↳ 已把讲义恢复为盖章前的字节（sha256=%s…）'
-          % (LC.sha256_file(lecture) or '')[:12])
+    """把讲义恢复成盖章前的内容（tmp → os.replace）。返回是否成功。
+
+    失败**不抛异常**：回滚失败时真正要紧的是让调用方把"必须手工恢复"这条信息打出来
+    （`safe_edit.save` 已留下 `.bak`），而不是再抛一个异常把这条信息也吞掉。
+    """
+    try:
+        tmp = lecture + '.rollback'
+        io.open(tmp, 'wb').write(data)
+        os.replace(tmp, lecture)
+    except OSError as exc:
+        print('   ↳ 回滚失败（%s: %s）' % (type(exc).__name__, exc))
+        return False
+    print('   ↳ 已把讲义恢复为盖章前的字节（sha256=%s…）' % (LC.sha256_file(lecture) or '')[:12])
+    return True
 
 
 def main():
@@ -311,14 +332,28 @@ def main():
         return rc
     if not a.verify_final:
         return rc
-    code, rec = verify_final(lec, src, final_json, result if a.result_json else None)
+    try:
+        code, rec = verify_final(lec, src, final_json, result if a.result_json else None)
+    except BaseException as exc:                     # noqa: BLE001 —— 复检自身出任何问题都必须回滚
+        rec = {'schema_version': LC.SCHEMA_VERSION,
+               'stamped_at': datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='seconds'),
+               'before_lecture_sha256': (result or {}).get('lecture_sha256'),
+               'verification_error': '%s: %s' % (type(exc).__name__, exc),
+               'stamp_did_not_break_anything': False, 'rolled_back': True}
+        code = 1
+        print('[FAIL] 盖章后复检自身出错（%s）——按未通过处理，回滚讲义' % rec['verification_error'])
     if code:
         rec['rolled_back'] = True
-        restore(lec, original)
+        rollback_ok = restore(lec, original)
         rec['final_lecture_sha256'] = LC.sha256_file(lec)
+        rec['rollback_ok'] = rollback_ok
         write_final_record(final_json, rec)
-        print('[FAIL] 盖章后复检未通过 → **已自动回滚讲义**（工具退出码 1）；'
-              '修好门禁问题后重新生成结果再盖章。')
+        if rollback_ok:
+            print('[FAIL] 盖章后复检未通过 → **已自动回滚讲义**（工具退出码 1）；'
+                  '修好门禁问题后重新生成结果再盖章。')
+        else:
+            print('[FAIL] 盖章后复检未通过，且**自动回滚失败**——请立刻从 %s.bak 恢复讲义'
+                  % os.path.basename(lec))
         return 1
     write_final_record(final_json, rec)
     print('[OK ] 盖章后复跑闸门通过（退出码 0），最终哈希已记录')

@@ -40,6 +40,11 @@ import lecture_checks as LC          # noqa: E402
 DEFAULT_LOG_DIR = 'NOTES/.replicate-learning'
 
 
+def contract_version():
+    """当前判据版本（取自 SSOT，与 gate_lecture.GATE_VERSION 由 skill_selfcheck 断言一致）。"""
+    return LC.load_contract().get('version')
+
+
 class Conflict(Exception):
     """校验不通过：必须中止，且**不得**写入任何文件。"""
 
@@ -99,7 +104,16 @@ def check_record(rec):
 
 
 def check_evidence(rec, root):
-    """讲义哈希 / 门禁最终记录 / 源文件清单 —— 三者都要与记录对得上。"""
+    """讲义哈希 / 门禁证据 / 源文件清单 —— 三者都要与记录对得上。
+
+    门禁证据分两种入口，**两种都必须走完整结论校验**：
+      · `gate_final`（推荐，sync_gate_result --apply 的产物）：要求 `pass=true`、`exit_code=0`、
+        `rolled_back` 不为真、`stamp_did_not_break_anything` 不为假、最终哈希等于讲义当前哈希；
+        这些是**互相独立的信号**，少查一个就能放过"盖章后复检其实失败了"的记录。
+      · `gate_result`（旧的直接发布入口）：调用 `lecture_checks.validate_result` 做完整校验
+        （schema / 契约版本 / 正文哈希 / 清单哈希 / 必需检查项 / 无阻塞 / 顶层 pass·pass_·verdict 自洽）。
+        原实现只看"有没有阻塞项"，于是 `pass=false、verdict=FAIL 但没有阻塞项` 的记录也能发布。
+    """
     lec = inside(root, rec['lecture'])
     if not os.path.isfile(lec):
         raise Conflict('讲义不存在：%s' % rec['lecture'])
@@ -107,31 +121,13 @@ def check_evidence(rec, root):
     if rec.get('lecture_sha256') and rec['lecture_sha256'] != lec_sha:
         raise Conflict('讲义哈希与记录不符（记录 %s… / 实际 %s…）——先复核再发布'
                        % (rec['lecture_sha256'][:12], lec_sha[:12]))
-    if rec.get('gate_final'):
-        gf = inside(root, rec['gate_final'])
-        if not os.path.isfile(gf):
-            raise Conflict('门禁最终记录不存在：%s（先跑 sync_gate_result --apply 生成）' % rec['gate_final'])
-        final = json.load(io.open(gf, encoding='utf-8'))
-        if not final.get('pass'):
-            raise Conflict('门禁最终记录 pass=%r —— 未通过的批次不得发布' % final.get('pass'))
-        if final.get('final_lecture_sha256') != lec_sha:
-            raise Conflict('门禁最终哈希 %s… ≠ 讲义当前哈希 %s…（盖章后又改过正文）'
-                           % (str(final.get('final_lecture_sha256'))[:12], lec_sha[:12]))
-    elif rec.get('gate_result'):
-        gr = inside(root, rec['gate_result'])
-        if not os.path.isfile(gr):
-            raise Conflict('门禁结果不存在：%s' % rec['gate_result'])
-        data = LC.load_result(gr)
-        if data.get('lecture_sha256') != lec_sha:
-            raise Conflict('门禁结果不是针对当前讲义（哈希不符）')
-        if LC.blocking_checks(data):
-            raise Conflict('门禁结果有阻塞项：%s' % '、'.join(c['id'] for c in LC.blocking_checks(data)))
-    else:
-        raise Conflict('记录里既没有 gate_final 也没有 gate_result —— 无法证明本批通过门禁')
+
+    manifest_sha = None
     if rec.get('manifest'):
         man = inside(root, rec['manifest'])
         if not os.path.isfile(man):
             raise Conflict('清单不存在：%s' % rec['manifest'])
+        manifest_sha = LC.sha256_file(man)
         data = json.load(io.open(man, encoding='utf-8'))
         for rel, meta in (data.get('files') or {}).items():
             p = inside(root, rel)
@@ -139,6 +135,47 @@ def check_evidence(rec, root):
                 raise Conflict('清单里的源文件不存在：%s（源码已删改，先重跑清单）' % rel)
             if LC.sha256_file(p) != meta.get('sha256'):
                 raise Conflict('清单里的源文件已变化：%s（本批发布的前提是源码未再改动）' % rel)
+
+    if rec.get('gate_final'):
+        gf = inside(root, rec['gate_final'])
+        if not os.path.isfile(gf):
+            raise Conflict('门禁最终记录不存在：%s（先跑 sync_gate_result --apply 生成）' % rec['gate_final'])
+        final = json.load(io.open(gf, encoding='utf-8'))
+        problems = []
+        if not final.get('pass'):
+            problems.append('pass=%r' % final.get('pass'))
+        if final.get('exit_code') != 0:
+            problems.append('exit_code=%r（复检进程必须退出码 0）' % final.get('exit_code'))
+        if final.get('rolled_back'):
+            problems.append('rolled_back=true（记录显示盖章后复检失败并已回滚，讲义已不是那一版）')
+        if final.get('stamp_did_not_break_anything') is False:
+            problems.append('stamp_did_not_break_anything=false')
+        if final.get('verification_error') or final.get('result_read_error'):
+            problems.append('复检自身出错：%s' % (final.get('verification_error')
+                                                or final.get('result_read_error')))
+        if final.get('final_lecture_sha256') != lec_sha:
+            problems.append('最终哈希 %s… ≠ 讲义当前哈希 %s…（盖章后又改过正文）'
+                            % (str(final.get('final_lecture_sha256'))[:12], lec_sha[:12]))
+        if final.get('contract_version') and str(final['contract_version']) != str(contract_version()):
+            problems.append('最终记录契约 v%s ≠ 当前 v%s'
+                            % (final.get('contract_version'), contract_version()))
+        if problems:
+            raise Conflict('门禁最终记录不能作为发布依据：%s（**未通过的批次不得发布**）'
+                           % '；'.join(problems))
+    elif rec.get('gate_result'):
+        gr = inside(root, rec['gate_result'])
+        if not os.path.isfile(gr):
+            raise Conflict('门禁结果不存在：%s' % rec['gate_result'])
+        data = LC.load_result(gr)
+        problems = LC.validate_result(data, expect_lecture_sha256=lec_sha,
+                                      expect_manifest_sha256=manifest_sha,
+                                      expect_contract_version=contract_version(),
+                                      required_ids=LC.REQUIRED_RESULT_CHECKS)
+        if problems:
+            raise Conflict('门禁结果不能作为发布依据（完整校验未通过）：\n   - %s'
+                           % '\n   - '.join(problems))
+    else:
+        raise Conflict('记录里既没有 gate_final 也没有 gate_result —— 无法证明本批通过门禁')
     return lec
 
 
