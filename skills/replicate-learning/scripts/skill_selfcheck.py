@@ -1186,6 +1186,88 @@ def check_structured_result(r):
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def check_publish(r):
+    """㉔ 发布器的"先验后写"闭环（方案 §3.5）：冲突时一个文件都不许动，重复发布零变化。
+
+    为什么必须自测：发布器要写的是**用户的项目文件**（覆盖矩阵/总索引/阶段页/状态）。
+    它出错的形态不是"报错"，而是"写到一半停下"——留下互相矛盾的半套状态，比不写更糟。
+    所以这里在临时项目里跑一次真发布：先冲突（断言零写入），再成功（断言幂等 + 用户改动保留）。
+    """
+    sys.path.insert(0, HERE)
+    import publish_batch as PB          # noqa: E402
+    import lecture_checks as LC         # noqa: E402
+    import contextlib                   # noqa: E402
+
+    tmp = tempfile.mkdtemp(prefix='publish_selfcheck_')
+    try:
+        root = os.path.join(tmp, 'proj')
+        os.makedirs(os.path.join(root, 'NOTES'))
+        io.open(os.path.join(root, 'NOTES', '覆盖矩阵.md'), 'w', encoding='utf-8', newline='').write(
+            '# 覆盖矩阵\n\n| 文件 | 状态 |\n|---|---|\n| 旧件 | 已讲 |\n')
+        io.open(os.path.join(root, 'NOTES', '状态.md'), 'w', encoding='utf-8', newline='').write(
+            '# 状态\n\n下一批：阶段3批次47\n')
+        lec = os.path.join(root, 'NOTES', '批次48.md')
+        io.open(lec, 'w', encoding='utf-8', newline='').write('# 批次48\n\n正文。\n')
+        final = os.path.join(root, 'NOTES', 'b48.final.json')
+        io.open(final, 'w', encoding='utf-8', newline='').write(json.dumps(
+            {"pass": True, "final_lecture_sha256": LC.sha256_file(lec)}, ensure_ascii=False))
+
+        def record(targets):
+            return {"schema_version": 1, "project_root": root, "batch_id": "stage3-b48",
+                    "batch_no": 48, "next_batch": "stage3-b49", "title": "x", "book": 1,
+                    "lecture": "NOTES/批次48.md", "gate_final": "NOTES/b48.final.json",
+                    "teaching": [{"file": "rag/A.java", "role": "主讲"}], "targets": targets}
+
+        good = [{"file": "NOTES/覆盖矩阵.md", "op": "insert_before_anchor", "anchor": "| 旧件 | 已讲 |",
+                 "idempotent_key": "批次48", "text": "| rag/A.java | 已讲（阶段3批次48） |"},
+                {"file": "NOTES/状态.md", "op": "replace_anchor", "anchor": "下一批：阶段3批次47",
+                 "expect": "阶段3批次47", "idempotent_key": "下一批：阶段3批次49",
+                 "text": "下一批：阶段3批次49"}]
+        rec_path = os.path.join(tmp, 'record.json')
+
+        def run(rec, extra=('--apply',)):
+            io.open(rec_path, 'w', encoding='utf-8', newline='').write(json.dumps(rec, ensure_ascii=False))
+            argv, old = sys.argv, sys.argv
+            sys.argv = ['publish_batch.py', '--record', rec_path] + list(extra)
+            try:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    return PB.main()
+            finally:
+                sys.argv = old
+
+        def snap():
+            return {f: io.open(os.path.join(root, 'NOTES', f), encoding='utf-8').read()
+                    for f in ('覆盖矩阵.md', '状态.md')}
+
+        before = snap()
+        bad = record([good[0], dict(good[1], anchor='这一行不存在')])
+        rc_bad = run(bad)
+        if rc_bad != 0 and snap() == before:
+            r.ok('发布器：第二个目标冲突 → 中止且**两个文件都没动**（不留半套状态）')
+        else:
+            r.fail('发布器冲突处理异常：rc=%s，文件是否变动=%s' % (rc_bad, snap() != before))
+
+        rc_ok = run(record(good))
+        after = snap()
+        if rc_ok == 0 and '阶段3批次48' in after['覆盖矩阵.md'] and '阶段3批次49' in after['状态.md']:
+            r.ok('发布器：全部校验通过后才写入，覆盖矩阵与状态同时更新')
+        else:
+            r.fail('发布器写入失败：rc=%s' % rc_ok)
+        rc_again = run(record(good))
+        if rc_again == 0 and snap() == after:
+            r.ok('发布器：重复发布零变化（idempotent_key 命中即跳过）')
+        else:
+            r.fail('发布器不幂等：重复发布改动了文件')
+        bad_hash = record(good)
+        bad_hash['lecture_sha256'] = '0' * 64
+        if run(bad_hash) != 0 and snap() == after:
+            r.ok('发布器：讲义哈希不符 → 拒绝发布且原文件不动')
+        else:
+            r.fail('发布器未拒绝哈希不符的记录')
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def main():
     print('=' * 88)
     print('技能文档一致性自检（skill_selfcheck.py）  根目录:', ROOT)
@@ -1237,6 +1319,8 @@ def main():
     check_slots(r)
     print('\n㉓ 结构化门禁结果与盖章闭环（方案 §3.4）：稳定 ID / 无真空 PASS / 哈希绑定')
     check_structured_result(r)
+    print('\n㉔ 发布器先验后写（方案 §3.5）：冲突零写入 / 幂等 / 哈希绑定')
+    check_publish(r)
     print('\n' + '=' * 88)
     print('检查项 %d，失败 %d → %s' % (r.n, r.bad, 'PASS ✅' if r.bad == 0 else 'FAIL ❌'))
     print('=' * 88)
