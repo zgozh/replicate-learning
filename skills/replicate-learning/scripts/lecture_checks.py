@@ -185,6 +185,11 @@ def make_result(producer, checks, contract_version=None, lecture_sha256=None,
     if extra:
         result.update(extra)
     result["pass"] = not any(c.get("status") in BLOCKING for c in result["checks"])
+    # 三个结论字段**必须一并产出**（与 gate_lecture 同名的 pass_ / verdict 也在内）：
+    # 校验方要求"字段必须存在且值明确合格"，构造函数就不能把它们留空——
+    # 否则工具自己产的结果会被自己的校验拒掉，或者（更糟）留下"缺字段即放行"的口子。
+    result["pass_"] = result["pass"]
+    result["verdict"] = "PASS" if result["pass"] else "FAIL"
     return result
 
 
@@ -261,18 +266,26 @@ def validate_result(result, *, expect_lecture_sha256=None, expect_manifest_sha25
             problems.append("检查 %s 写 PASS 但核验对象数为 0（真空通过）" % c.get("id"))
 
     blocking = [c.get("id") for c in result.get("checks", []) if c.get("status") in BLOCKING]
-    # 顶层结论字段（三个都要看，缺一就可能放过"自述失败"的结果）
-    top_pass = result.get("pass")
-    if top_pass is False:
-        problems.append("结果顶层 pass=false（自述未通过）——不许盖章")
-    if "pass_" in result and result.get("pass_") is False:
-        problems.append("结果里 pass_=false（gate 结构化字段）——不许盖章")
-    verdict = result.get("verdict")
-    if verdict is not None and not str(verdict).strip().upper().startswith("PASS"):
-        problems.append("结果 verdict=%r 不是 PASS——不许盖章" % verdict)
-    if top_pass and blocking:
+    # 顶层结论字段：**必须存在且值明确合格**。原实现写的是"存在且为假才报错"，
+    # 于是把 pass / pass_ / verdict 整段删掉就能绕过结论校验（审查第三轮实测）。
+    for field, ok_value, human in (("pass", True, "顶层 pass 必须存在且为 true"),
+                                   ("pass_", True, "pass_ 必须存在且为 true"),
+                                   ("verdict", None, "verdict 必须存在且明确写成 PASS")):
+        if field not in result:
+            problems.append("结果缺少顶层结论字段 %s（%s）——不许盖章" % (field, human))
+            continue
+        value = result[field]
+        if field == "verdict":
+            # 闸门写的是 `总判定: PASS ✅`，构造函数写 `PASS`——两种都认；出现 FAIL/空值一律拒绝。
+            text = str(value).strip().upper()
+            if not text or "PASS" not in text or "FAIL" in text:
+                problems.append("结果 verdict=%r 不是 PASS——不许盖章" % value)
+        elif value is not ok_value:
+            label = "自述未通过" if value is False else "取值 %r 非法" % value
+            problems.append("结果 %s=%r（%s）——不许盖章" % (field, value, label))
+    if result.get("pass") and blocking:
         problems.append("结果 pass=true 却有阻塞项 %s（结论与检查项矛盾）" % "、".join(blocking))
-    if top_pass is False and not blocking:
+    if result.get("pass") is False and not blocking:
         problems.append("结果 pass=false 却没有任何 FAIL/ERROR 检查项（结论与检查项矛盾）")
     return problems
 

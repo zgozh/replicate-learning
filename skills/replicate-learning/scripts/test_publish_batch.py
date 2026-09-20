@@ -240,13 +240,35 @@ class PublishTests(unittest.TestCase):
         self.assertEqual(self.snapshot(), before)
 
     # ── 审查第二轮：发布入口必须用**完整结论校验**，不能只看单个字段 ──
-    def _final(self, **overrides):
+    def _final(self, drop=(), **overrides):
         rec = {"schema_version": LC.SCHEMA_VERSION, "pass": True, "exit_code": 0,
                "rolled_back": False, "stamp_did_not_break_anything": True,
                "contract_version": LC.load_contract()["version"],
                "final_lecture_sha256": LC.sha256_file(self.lec)}
         rec.update(overrides)
+        for field in drop:
+            rec.pop(field, None)
         self.final.write_text(json.dumps(rec, ensure_ascii=False), encoding="utf-8")
+
+    def test_gate_final_missing_required_fields_is_refused(self):
+        """审查第三轮：字段**缺失**与"取值不合格"同样必须拒绝（原来缺字段即放行）。"""
+        for field in ("pass", "exit_code", "rolled_back", "stamp_did_not_break_anything",
+                      "contract_version", "final_lecture_sha256"):
+            with self.subTest(field=field):
+                self._final(drop=(field,))
+                before = self.snapshot()
+                self.assertEqual(self.run_publish(["--apply"]), 1, "缺 %s 仍被接受" % field)
+                self.assertEqual(self.snapshot(), before)
+
+    def test_gate_final_with_null_required_field_is_refused(self):
+        for field in ("contract_version", "stamp_did_not_break_anything"):
+            with self.subTest(field=field):
+                self._final(**{field: None})
+                self.assertEqual(self.run_publish(["--apply"]), 1, "%s=null 仍被接受" % field)
+
+    def test_gate_final_with_failed_rollback_is_refused(self):
+        self._final(rollback_ok=False)
+        self.assertEqual(self.run_publish(["--apply"]), 1)
 
     def test_gate_final_with_nonzero_exit_code_is_refused(self):
         """pass=true 但 exit_code=1（复检进程其实没通过）→ 不得发布。"""

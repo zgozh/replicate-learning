@@ -144,8 +144,8 @@ class ResultStampingTests(unittest.TestCase):
         self.assertEqual(self.doc.read_text(encoding="utf-8"), before)
         problems = LC.validate_result(result, expect_lecture_sha256=LC.sha256_file(self.doc))
         blob = " ".join(problems)
-        self.assertIn("顶层 pass=false", blob)
-        self.assertIn("pass_=false", blob)
+        self.assertIn("pass=False", blob)
+        self.assertIn("pass_=False", blob)
         self.assertIn("verdict=", blob)
 
     def test_rendered_top_level_confusing_pass_flags(self):
@@ -321,6 +321,36 @@ class FinalVerificationTests(unittest.TestCase):
             self.assertFalse(rec["stamp_did_not_break_anything"])
             self.assertEqual(rec["exit_code"], 1)
             self.assertFalse(os.path.exists(jout), "复检用的临时结果文件必须清掉")
+
+
+class ConclusionFieldTests(unittest.TestCase):
+    """审查第三轮：结论字段**缺失**与"取值不合格"同样必须拒绝（原来缺字段即放行）。"""
+
+    def test_make_result_always_emits_the_conclusion_fields(self):
+        result = good_result("a" * 64)
+        for field in ("pass", "pass_", "verdict"):
+            self.assertIn(field, result)
+        self.assertTrue(result["pass"])
+        self.assertTrue(result["pass_"])
+        self.assertTrue(str(result["verdict"]).startswith("PASS"))
+
+    def test_validate_result_requires_each_conclusion_field(self):
+        for field in ("pass", "pass_", "verdict"):
+            with self.subTest(field=field):
+                result = good_result("a" * 64)
+                result.pop(field)
+                problems = LC.validate_result(result, expect_lecture_sha256="a" * 64,
+                                              expect_contract_version=VERSION,
+                                              required_ids=list(S.REQUIRED_CHECKS))
+                self.assertTrue(any(("缺少顶层结论字段 %s" % field) in p for p in problems), problems)
+
+    def test_validate_result_rejects_a_result_without_any_conclusion_fields(self):
+        problems = LC.validate_result({"schema_version": LC.SCHEMA_VERSION,
+                                       "checks": [{"id": "G-STRUCT", "status": LC.PASS,
+                                                   "checked": 1}]})
+        blob = " ".join(problems)
+        for field in ("pass", "pass_", "verdict"):
+            self.assertIn("缺少顶层结论字段 %s" % field, blob)
 
 
 class GateAllRecordFileTests(unittest.TestCase):

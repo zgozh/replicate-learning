@@ -1197,6 +1197,18 @@ def check_structured_result(r):
             r.ok('盖章前置校验：顶层 pass/pass_/verdict 自述失败 → 拒绝（不被各项 PASS 骗过）')
         else:
             r.fail('顶层结论字段未参与盖章校验（失败结果可能被盖章）：%s' % bad)
+
+        # 缺字段与取值不合格同等对待（审查第三轮：删掉整段结论字段就能溜过去）
+        stripped = json.loads(json.dumps(forged, ensure_ascii=False))
+        for field in ('pass', 'pass_', 'verdict'):
+            stripped.pop(field, None)
+        gone = LC.validate_result(stripped, expect_lecture_sha256=data['lecture_sha256'],
+                                  expect_contract_version=G.GATE_VERSION)
+        if all(any(('缺少顶层结论字段 %s' % f) in x for x in gone)
+               for f in ('pass', 'pass_', 'verdict')):
+            r.ok('盖章前置校验：结果整段缺少 pass/pass_/verdict → 拒绝（缺字段不等于合格）')
+        else:
+            r.fail('缺少结论字段的结果未被拒绝：%s' % gone)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -1316,6 +1328,16 @@ def check_publish(r):
                 r.ok('发布器：最终记录 %s → 拒绝发布（未通过的批次不得发布）' % tag)
             else:
                 r.fail('发布器：最终记录 %s 仍被接受——发布入口的结论校验有缺口' % tag)
+        # 缺字段与取值不合格同等对待（审查第三轮：删掉字段就能溜过去）
+        for field in ('contract_version', 'stamp_did_not_break_anything'):
+            keep = dict(json.loads(before_final))
+            keep.pop(field, None)
+            io.open(final, 'w', encoding='utf-8', newline='').write(
+                json.dumps(keep, ensure_ascii=False))
+            if run(record(good)) != 0:
+                r.ok('发布器：最终记录缺 %s → 拒绝发布（缺字段不等于合格）' % field)
+            else:
+                r.fail('发布器：最终记录缺 %s 仍被接受——字段存在性未校验' % field)
         io.open(final, 'w', encoding='utf-8', newline='').write(before_final)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

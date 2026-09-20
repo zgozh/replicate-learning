@@ -40,7 +40,9 @@
 | `1a83bbc` | feat(publish): 一份批次记录更新全部派生视图（§3.5） |
 | `6c39f83` | docs: 文档同步与交付说明 + `gate_all` 崩溃缺陷修复 |
 | `8da47e4` | test(e2e): 端到端脚本化试运行 |
-| 见 §9 | fix(review): 审查发现的 4 处缺陷修复 + 回归测试 |
+| `8a57300` | fix(review): 审查 4 处缺陷（归档覆盖 / 盖章校验 / 复检回滚 / 验收脚本） |
+| `ef7c2fe` | fix(review2): 发布入口改用完整结论校验；复检异常路径也回滚 |
+| 见 §9.2 | fix(review3): 结论字段必须存在且值明确合格 |
 
 ## 3. 判据回归：改造前后判定必须一字不变
 
@@ -141,9 +143,9 @@
 cd skills/replicate-learning
 
 # 全量自检与单测
-python scripts/skill_selfcheck.py          # 期望：检查项 96，失败 0 → PASS
+python scripts/skill_selfcheck.py          # 期望：检查项 99，失败 0 → PASS
 python scripts/v2_selfcheck.py             # 期望：PASS (6 contract entries)
-python -m unittest discover -s scripts -p "test_*.py" -t scripts   # 期望：101 项 OK
+python -m unittest discover -s scripts -p "test_*.py" -t scripts   # 期望：107 项 OK
 
 # 预检：首轮计划必须报出 3 个 ★ 签名缺口 + 5 处密度连段；修复后计划必须 0 缺口
 python scripts/batch_preflight.py --src tests/fixtures/batch48/project \
@@ -230,3 +232,23 @@ gate_result: 健康结果（预期 rc=0）                           rc=0
 
 验证（第二轮修复后复跑）：`skill_selfcheck` **96 项 0 失败**、单测 **101 项 OK**、`v2_selfcheck` PASS、
 端到端脚本化试运行 17 步期望全中；`gate_lecture.py` 仍未改动（`git diff c03baca -- …/gate_lecture.py` 为空）。
+
+### 9.2 第三轮审查（缺字段 = 不合格）
+
+| # | 审查意见 | 复现 | 修复 | 回归测试 |
+|---|---|---|---|---|
+| 7 | **缺失的结论字段被当作合格**（`publish_batch.py` / `lecture_checks.py`） | ① 最终记录缺 `contract_version` 与 `stamp_did_not_break_anything` → 仍被接受；② 普通结果整段缺 `pass`/`pass_`/`verdict` → 仍被接受 | 判定从"存在且不合格才报错"改为**字段必须存在且值明确合格**：`check_evidence` 对 `pass/exit_code/rolled_back/stamp_did_not_break_anything/contract_version/final_lecture_sha256` 六个字段先查存在性（缺失或 `null` 一律拒绝）再查取值，并新增 `rollback_ok=false` 拒绝；`validate_result` 对 `pass`/`pass_`/`verdict` 三者要求存在且合格（`verdict` 认闸门的 `总判定: PASS ✅` 与构造函数的 `PASS` 两种写法，出现 FAIL 或空值即拒）；同时让 `make_result` **总是产出**这三个字段（否则工具自己造的结果会被自己的校验拒掉） | `test_gate_final_missing_required_fields_is_refused`（六个字段逐一审）、`test_gate_final_with_null_required_field_is_refused`、`test_gate_final_with_failed_rollback_is_refused`、`test_validate_result_requires_each_conclusion_field`、`test_validate_result_rejects_a_result_without_any_conclusion_fields`、`test_make_result_always_emits_the_conclusion_fields`；`skill_selfcheck` ㉓㉔ 各再加两条缺字段拒绝断言 |
+
+定向复现（CLI 实跑，本次修复后）：
+
+```text
+健康最终记录（预期 rc=0）                                     rc=0
+gate_final 缺 contract_version + stamp_did_not_break_anything  rc=1  [ABORT] …缺少字段 stamp_did_not_break_anything…缺少字段 contract_version…
+gate_final 缺 rolled_back（预期拒绝）                          rc=1  [ABORT] …缺少字段 rolled_back（盖章失败后是否已回滚）…
+gate_result 完全没有 pass/pass_/verdict（预期拒绝）             rc=1  [ABORT] 门禁结果不能作为发布依据（完整校验未通过）
+gate_result 缺 pass_（预期拒绝）                               rc=1  [ABORT] 门禁结果不能作为发布依据（完整校验未通过）
+gate_result 健康结果（预期 rc=0）                              rc=0
+```
+
+验证（第三轮修复后复跑）：`skill_selfcheck` **99 项 0 失败**、单测 **107 项 OK**、`v2_selfcheck` PASS、
+端到端脚本化试运行 17 步期望全中。

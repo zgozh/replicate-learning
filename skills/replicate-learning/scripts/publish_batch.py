@@ -142,23 +142,32 @@ def check_evidence(rec, root):
             raise Conflict('门禁最终记录不存在：%s（先跑 sync_gate_result --apply 生成）' % rec['gate_final'])
         final = json.load(io.open(gf, encoding='utf-8'))
         problems = []
-        if not final.get('pass'):
-            problems.append('pass=%r' % final.get('pass'))
-        if final.get('exit_code') != 0:
-            problems.append('exit_code=%r（复检进程必须退出码 0）' % final.get('exit_code'))
-        if final.get('rolled_back'):
-            problems.append('rolled_back=true（记录显示盖章后复检失败并已回滚，讲义已不是那一版）')
-        if final.get('stamp_did_not_break_anything') is False:
-            problems.append('stamp_did_not_break_anything=false')
+        # **字段必须存在且值明确合格**：原实现是"存在且不合格才报错"，
+        # 于是删掉 contract_version / stamp_did_not_break_anything / rolled_back 就能溜过去（审查第三轮实测）。
+        for field, want, human in (("pass", True, "门禁是否通过"),
+                                   ("exit_code", 0, "复检进程退出码"),
+                                   ("rolled_back", False, "盖章失败后是否已回滚"),
+                                   ("stamp_did_not_break_anything", True, "盖章是否破坏了成品"),
+                                   ("contract_version", None, "最终记录的判据版本"),
+                                   ("final_lecture_sha256", None, "最终成品哈希")):
+            if field not in final or final[field] is None:
+                problems.append('缺少字段 %s（%s）——记录不完整，不得作为发布依据' % (field, human))
+                continue
+            if field == "contract_version":
+                if str(final[field]) != str(contract_version()):
+                    problems.append('contract_version=%s ≠ 当前 v%s'
+                                    % (final[field], contract_version()))
+            elif field == "final_lecture_sha256":
+                if final[field] != lec_sha:
+                    problems.append('final_lecture_sha256=%s… ≠ 讲义当前哈希 %s…（盖章后又改过正文）'
+                                    % (str(final[field])[:12], lec_sha[:12]))
+            elif final[field] != want:
+                problems.append('%s=%r（应为 %r）' % (field, final[field], want))
         if final.get('verification_error') or final.get('result_read_error'):
             problems.append('复检自身出错：%s' % (final.get('verification_error')
                                                 or final.get('result_read_error')))
-        if final.get('final_lecture_sha256') != lec_sha:
-            problems.append('最终哈希 %s… ≠ 讲义当前哈希 %s…（盖章后又改过正文）'
-                            % (str(final.get('final_lecture_sha256'))[:12], lec_sha[:12]))
-        if final.get('contract_version') and str(final['contract_version']) != str(contract_version()):
-            problems.append('最终记录契约 v%s ≠ 当前 v%s'
-                            % (final.get('contract_version'), contract_version()))
+        if final.get('rollback_ok') is False:
+            problems.append('rollback_ok=false（上次回滚失败，讲义可能停在半套状态）')
         if problems:
             raise Conflict('门禁最终记录不能作为发布依据：%s（**未通过的批次不得发布**）'
                            % '；'.join(problems))
