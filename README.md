@@ -4,7 +4,7 @@
 > 默认交付**第一册项目源码与工程实现**；第二、三册需用户明确提出。每条源码结论都保留可复检的证据。
 
 [![判据版本](https://img.shields.io/badge/判据-v2.30-blue)](skills/replicate-learning/references/第一册质量细则.md)
-[![自检](https://img.shields.io/badge/selfcheck-105%20项%200%20失败-brightgreen)](skills/replicate-learning/scripts/skill_selfcheck.py)
+[![自检](https://img.shields.io/badge/selfcheck-112%20项%200%20失败-brightgreen)](skills/replicate-learning/scripts/skill_selfcheck.py)
 [![License](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE)
 
 ---
@@ -54,7 +54,7 @@
 | 常见做法 | 本 Skill |
 |---|---|
 | 让 AI "讲一下这个项目"，产出一段说明 | 默认逐批产出第一册；其他册按用户明确请求启用 |
-| 讲解质量靠"模型自觉" | **105 项技能自检 + 批次闸门**复检，保留人工语义审读 |
+| 讲解质量靠"模型自觉" | **112 项技能自检 + 批次闸门**复检，保留人工语义审读 |
 | 贴代码靠模型手打，行号经常是编的 | 代码块由 `inject_source.py` **从真实源码逐行注入**，行号零漂移；`④ 行号一致性`逐处核对 |
 | "已扫描"≈"已讲解"≈"已验证" | 三者严格区分，禁止互相冒充；没跑过的必须写"未实测" |
 | 讲完一个文件就算过 | `② ★反向完整度`：★ 类源文件的**每一条有效行**都要在讲解里出现 |
@@ -87,11 +87,11 @@ cp -r skills/replicate-learning ~/.agents/skills/
 
 ```bash
 cd ~/.workbuddy/skills/replicate-learning     # 换成你的实际安装路径
-python scripts/skill_selfcheck.py             # 期望：检查项 105，失败 0 → PASS ✅
+python scripts/skill_selfcheck.py             # 期望：检查项 112，失败 0 → PASS ✅
 python scripts/v2_selfcheck.py                # 期望：V2 self-check: PASS (6 contract entries)
 ```
 
-> 单元测试（可选，10 个 `test_*.py` 共 112 项）：
+> 单元测试（可选，11 个 `test_*.py` 共 137 项）：
 > `python -m unittest discover -s scripts -p "test_*.py" -t scripts`
 >
 > Windows 提示：若把工具输出重定向到文件却看到 `UnicodeEncodeError`，说明用的是旧版本脚本——
@@ -136,12 +136,12 @@ NOTES/
 
 ```text
 batch_trace start                       计时开批（分步耗时：准备/写作/注入/修复/终检/验证/归档）
-→ batch_manifest prepare                固定本批源码 hash
-→ new_batch --plan --batch-json         17 节骨架 + 每件**稳定源码槽位** + batch.json/annotations.json
-→ batch_preflight                       注入前预检：★ 签名缺口 / 密度连段 / 坏注释键 / 片段参数
+→ batch_manifest prepare                本批源码 hash 清单（**一次把本批全部源文件传齐**）
+→ new_batch --plan --batch-json --skeleton  17 节骨架（与终稿分开两个文件）+ 稳定源码槽位 + batch.json/annotations.json
+→ batch_preflight                       注入前预检：★ 签名缺口 / 密度连段 / 坏注释键 / 片段参数 / **清单是否覆盖全部源文件**
 → 模型写分片（parts/*.md）               解释、因果、回放、⑫
-→ batch_build                           骨架 + 分片 + 注释计划 → 重建终稿（重复构建逐字节幂等）
-→ gate_lecture --json                   结构化结果（规则 ID / 状态 / 核验对象数 / 哈希）
+→ batch_build                           骨架 + 分片 + 注释计划 → 重建终稿（四种"假重建"配置直接拒绝）
+→ gate_lecture --json --manifest        结构化结果（规则 ID / 状态 / 核验对象数 / 哈希）
 → sync_gate_result --result-json --apply 验哈希后盖章 ⑯，盖章后复跑并记录最终哈希
 → publish_batch --record                一份批次记录更新覆盖矩阵/总索引/阶段页/状态（冲突零写入）
 ```
@@ -303,7 +303,7 @@ python scripts/batch_preflight.py --src <源码根> --plan <注释计划.json> [
 | **单一真源** | `spec/00-质量契约.json` | 每条要求 = id / 层级 / 判据原文 / gate 锚点 / SKILL 锚点 / 模板锚点 / 血证编号 |
 | **血证档案** | `spec/血证档案.md` | H1~H27：每条规则背后的真实事故。**想放宽判据前必读** |
 | **判据版本** | `references/第一册质量细则.md` §6.6 | 当前 **v2.30**；任何判据变更必须走三件套 |
-| **技能自检** | `scripts/skill_selfcheck.py` | 105 项，对账 SSOT ↔ 质量细则 ↔ 模板 ↔ gate，防规则丢失 |
+| **技能自检** | `scripts/skill_selfcheck.py` | 112 项，对账 SSOT ↔ 质量细则 ↔ 模板 ↔ gate，防规则丢失 |
 
 **判据变更三件套**（缺一即视为未完成）：
 
@@ -320,14 +320,14 @@ python scripts/batch_preflight.py --src <源码根> --plan <注释计划.json> [
 
 | 脚本 | 干什么 |
 |---|---|
-| `gate_lecture.py` | 闸门：一次跑完七项判定，输出判据版本与缺口；`--json` 出**结构化结果**（稳定规则 ID / 状态 / 核验对象数 / 哈希） |
+| `gate_lecture.py` | 闸门：一次跑完七项判定，输出判据版本与缺口；`--json` 出**结构化结果**（稳定规则 ID / 状态 / 核验对象数 / 哈希）；`--manifest` 显式指定本批源码清单（供盖章核对） |
 | `gate_all.py` | 全库记分卡 + 判据回归比对（`--baseline` 逐字段比对，变化即 FAIL） |
-| `skill_selfcheck.py` | 技能文档一致性自检（SSOT ↔ 质量细则 ↔ 模板 ↔ gate 对账，105 项） |
+| `skill_selfcheck.py` | 技能文档一致性自检（SSOT ↔ 质量细则 ↔ 模板 ↔ gate 对账，112 项） |
 | `v2_selfcheck.py` | V2 入口与产物契约检查 |
 | `batch_trace.py` | 批次分步计时器（JSONL）：把"一小时到底花在哪"拆成准备/写作/注入/修复/终检/验证/归档 |
-| `batch_preflight.py` | **开批预检**：注入前就用闸门同口径报出 ★ 签名缺口、密度连段与可补注行、坏注释键 |
-| `new_batch.py` | 新批次脚手架：从模板生成 17 节骨架；`--plan` 时逐件写**稳定源码槽位**并产出 `batch.json`/`annotations.json` |
-| `batch_build.py` | 从「骨架 + 分片 + 注释计划」**重建终稿**（`--dry-run` 预览、`--check` 比对、失败不写盘） |
+| `batch_preflight.py` | **开批预检**：注入前就用闸门同口径报出 ★ 签名缺口、密度连段与可补注行、坏注释键；并要求清单**覆盖注释计划里的全部源文件**（缺件 FAIL） |
+| `new_batch.py` | 新批次脚手架：从模板生成 17 节**骨架**（`--skeleton`，与终稿 `--out` 分开）；`--plan` 时逐件写**稳定源码槽位**并派生唯一一份可编辑 `annotations.json` 与 `batch.json` |
+| `batch_build.py` | 从「骨架 + 分片 + 注释计划」**重建终稿**（`--dry-run` 预览、`--check` 比对、失败不写盘）；构建前 fail-closed 拦住骨架=终稿 / annotations 指回原始计划 / 分片目录为空 / 某节仍是模板占位原文（缺分片） |
 | `publish_batch.py` | 用**一份批次记录**更新覆盖矩阵/总索引/阶段页/状态：先验后写、冲突零写入、幂等、`--git-add` 只加点名文件 |
 | `study_scope.py` | 默认第一册与显式扩展册范围解析、旧状态迁移 |
 | `batch_manifest.py` | 本批 Java/Python 等源文件 hash 清单与变更检查 |
@@ -360,7 +360,7 @@ replicate-learning/
     ├── docs/              (3)     安装与执行边界、通用学习方法、V2 试运行手册（archive/）
     ├── examples/          (2)     黄金样例（Java / Python）
     ├── references/       (30)     执行协议 + 全部讲解与工程模板 + 黄金样例节选
-    ├── scripts/          (21)     上表 21 个工具（另有 10 个 test_*.py 行为自测）
+    ├── scripts/          (21)     上表 21 个工具（另有 11 个 test_*.py 行为自测）
     ├── spec/              (7)     质量契约 SSOT、血证档案、操作手册、阶段工作流
     └── tests/fixtures/            回归夹具（batch48 真实批次 + py_mini 合成边界用例）
 ```

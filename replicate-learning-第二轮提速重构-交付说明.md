@@ -3,6 +3,7 @@
 > 日期：2026-09-20；仓库：`D:\develop\workspace\replicate-learningV2`。
 > 依据：《replicate-learning-批次48复盘与第二轮提速重构实施方案.md》§3.1–§3.5、§4、§5。
 > 状态：**阶段 1–5 已实现并提交**；§3.6（内容契约实验）**未实施**，理由见 §6。判据版本仍是 **v2.30，未改动任何质量判据**。
+> 第五轮（§11）修掉批次49 实录的四处工具链缺陷（版本门 / 清单覆盖 / 批次配置 / 重建护栏）——同样不动判据。
 
 ## 0. 一句话结论
 
@@ -27,7 +28,7 @@
 
 新增 4 个工具 + 1 个公共模块（`batch_trace` / `batch_preflight` / `batch_build` / `publish_batch` / `lecture_checks`），
 新增 5 个行为自测（`test_batch_trace` / `test_batch_preflight` / `test_batch_slots` / `test_gate_result` / `test_publish_batch`），
-`skill_selfcheck` 78 → **92 项**、单测 14 → **82 项**（§3.1–§3.5 阶段值）；四轮审查修复后终值 **105 项 / 112 项**（见 §9.3）。
+`skill_selfcheck` 78 → **92 项**、单测 14 → **82 项**（§3.1–§3.5 阶段值）；四轮审查修复后 105 项 / 112 项（§9.3）；第五轮（§11）后 **112 项 / 137 项**。
 
 ## 2. 五个提交
 
@@ -154,9 +155,9 @@ python scripts/batch_preflight.py --src tests/fixtures/batch48/project \
 python scripts/batch_preflight.py --src tests/fixtures/batch48/project \
     --plan tests/fixtures/batch48/b48_inject_plan_fixed.json --manifest tests/fixtures/batch48/b48_manifest.json
 
-# 槽位与可重复构建（骨架 → 分片 → 注入 → 重复构建）
+# 槽位与可重复构建（骨架 → 分片 → 注入 → 重复构建；骨架与终稿必须两个不同文件）
 python scripts/new_batch.py --stage 3 --batch 48 --title "智能切片策略" --classes "TableChunker★" \
-    --sha 16984b9 --out /tmp/skeleton.md --src tests/fixtures/batch48/project \
+    --sha 16984b9 --out /tmp/批次48.md --skeleton /tmp/skeleton.md --src tests/fixtures/batch48/project \
     --plan tests/fixtures/batch48/b48_inject_plan_fixed.json --batch-json /tmp/batch.json
 python scripts/batch_build.py --batch /tmp/batch.json --dry-run
 python scripts/batch_build.py --batch /tmp/batch.json --check
@@ -174,12 +175,15 @@ python tests/e2e_scripted_run.py --work /tmp/e2e
 python scripts/batch_trace.py --file <批次目录>/trace.jsonl start --batch-id <本批号>
 python scripts/batch_manifest.py prepare --src <项目根> --file <相对路径> --out <清单.json>
 python scripts/new_batch.py --stage N --batch M --title "…" --classes "…" --sha <sha> \
-    --out <批次.md> --src <项目根> --plan <注释计划.json> --batch-json <batch.json> --manifest <清单.json>
-python scripts/batch_preflight.py --src <项目根> --plan <注释计划.json> --manifest <清单.json>
+    --out <批次.md> --skeleton <骨架.md> --src <项目根> --plan <注释计划.json> \
+    --batch-json <batch.json> --manifest <清单.json>
+python scripts/batch_preflight.py --src <项目根> --plan <注释计划.json> \
+    --manifest <清单.json>            # 清单须覆盖本批全部源文件；多份清单就多次 --manifest
 #   …写 parts/*.md …
 python scripts/batch_build.py --batch <batch.json>
-python scripts/gate_lecture.py <批次.md> --src <项目根> --json <结果.json>
-python scripts/sync_gate_result.py <批次.md> --src <项目根> --result-json <结果.json> --apply
+python scripts/gate_lecture.py <批次.md> --src <项目根> --manifest <清单.json> --json <结果.json>
+python scripts/sync_gate_result.py <批次.md> --src <项目根> --result-json <结果.json> \
+    --manifest <清单.json> --apply     # 与闸门用**同一份** --manifest
 python scripts/publish_batch.py --record <batch_record.json>          # 预览 → --apply
 python scripts/batch_trace.py --file <批次目录>/trace.jsonl report
 ```
@@ -307,3 +311,104 @@ python scripts/v2_selfcheck.py      # V2 self-check: PASS (6 contract entries)
 > `~/.dsh/memories/pending-skills/` 下的技能建议是待确认队列、不是安装副本，未改动；
 > `~/.agents/.skill-lock.json` 只登记"从 GitHub 源安装"的技能（`find-skills` 等），本技能是本地作者技能，无需登记（装后 DSH 已能直接识别）；
 > 宿主项目 `D:\ragent-official` 内没有技能脚本副本，因此"宿主项目内脚本副本"这一处本次为空。
+
+## 11. 第五轮：批次49 实录的四处工具链缺陷（2026-09-20）
+
+用户导出批次49 全程会话（`test2.md`，72 分钟）后按时间戳分段，指出**主要额外耗时不在模型写正文**：
+准备 14 分钟 / 写 4 个分片 10 分钟 / 组装与首轮修稿 12 分钟 / **盖章与工具排障约 22 分钟** / 项目测试与归档约 12 分钟。
+其中四处是可复现的工具缺陷，本轮逐条修掉。
+
+### 11.1 版本门：同一份正文，首跑报告档、盖章后 FAIL 档
+
+**症状**：⑯ 已写 `判据版本：v2.30`，首跑闸门 ⓪e/⓪f 落"报告档"（缺口只报不判红，退出码 0）；
+盖章后同一份正文的同一批缺口升 FAIL 档 —— 看起来"盖章把正文改坏了"，实际一个字没改。
+
+**根因**：版本门有两套口径。⑯ 的规范字段是 `**判据版本：v2.30**`，而 `style_scope()` 自带的正则只认
+「判据 vX.Y」；`sync_gate_result` 写进 ⑯ 的表头恰好是 `**七组闸门实测**（判据 v2.30…）`，于是**盖章后才被认出来**。
+（H27 同族：判据只在它能识别的形态上生效 ⇒ 换个写法就能绕过它。）
+
+**修法**：版本只有一个来源 —— `gate_lecture.find_versions()`（规范字段优先、`vX.Y` 兜底），
+`core_scope` / `form_scope` / `snip_scope` / `style_scope` 四门全部走它。判据文本未变，`GATE_VERSION` 不动。
+
+**A/B 实测**（真实批次48 素材 + 一条人造结构缺口：⑦.4「不变式」被改词）：
+
+| 文件 | 旧闸门 | 新闸门 |
+|---|---|---|
+| 未盖章（只有规范版本字段），无缺口 | rc=0 PASS（报告档） | rc=0 PASS（**FAIL 档**，识别生效且不误伤） |
+| 未盖章 + 缺口 | rc=0 **PASS（缺口被报告档吞掉 ← 缺陷）** | rc=1 **FAIL ❌（1 条 `[FAIL]`）← 首跑即报全量错误** |
+| 盖章后 + 同一缺口 | rc=1 FAIL ❌ | rc=1 FAIL ❌（与首跑一致） |
+
+**回归**（"不该变的判定一字不变"）：ragent 批次1/33/40/43/47/48/49 + 4 份仓内样例，改造前后
+**退出码与 `[FAIL]` 行数全部一致**；另外对 48 份 ragent 批次逐份比对新旧版本档位，**翻转 0 份**
+（存量批次都已盖章、表头能被旧正则认出，所以只有"新批首跑"这一路径受影响——正是要修的那条）。
+
+### 11.2 预检 P-HASH：清单只覆盖 1/8 也算通过
+
+批次49 把 4 个源文件**分别** `batch_manifest.py prepare` 成 4 份清单，只把其中一份传给预检：
+`P-HASH` 核对那 1 个文件哈希正确 → PASS，而本批另外 3 个源文件**根本没被钉住**。
+
+修法：① `--manifest` 可重复传，多份清单合并后判覆盖率；② **清单必须覆盖注释计划里的全部源文件**，
+缺件直接 FAIL 并逐个点名（`覆盖计划源文件 1/8`）。测试 `test_batch_preflight.ManifestCoverageTests`
+（4 项：8/8 通过、1/8 拒绝并点名、8 份单文件清单合并通过、hash 漂移仍拒绝）。
+
+### 11.3 批次配置：annotations 指回原始计划，槽位要靠手补
+
+`new_batch.py` 已派生带槽位的 `annotations.json`，但批次配置被指回原始注入计划，
+随后手补槽位与行段；且 `--manifest` 只收最后一个值（多份清单只记下一份）。
+
+修法：`new_batch` ① `--manifest` 可重复，`batch.json` 记 `manifests` 全量；② `--batch-json` 必须配 `--plan`，
+否则拒绝（没有计划就派生不出可编辑的注释计划）；③ 写完自断言 `annotations.json` 存在且含槽位；
+④ 明确打印"**可编辑的注释计划只有这一份**，`plan_source` 只是输入"；
+⑤ `batch_build` 拒绝 `annotations == plan_source`，以及"骨架有槽位、计划 0 槽位"的错配。
+
+### 11.4 batch_build：同一路径的"重建"、缺分片的旧内容、盖章后的假差异
+
+批次49 的 `skeleton` 与 `out` 是同一路径，于是：
+省略 ⑥ 分片时**旧 ⑥ 内容原样留在"重建"结果里**（旧正文冒充派生产物）；
+终稿盖章后跑 `--check` 又报约 48 行差异并提示"先跑一次构建"。
+
+修法（四条 fail-closed + 一条比对口径）：
+
+| 护栏 | 拦住的形态 |
+|---|---|
+| `skeleton` ≠ `out` | 就地重建（旧正文冒充派生产物） |
+| `annotations` 必须存在且 ≠ `plan_source` | 槽位寻址静默退化成旧 `anchor/contains` |
+| 分片目录不能为空（`--allow-no-parts` 才放行） | 指错目录时"重建"只是把骨架抄一遍 |
+| 没有任何一节仍是模板占位原文 | 缺分片（那一节没有任何输入覆盖它） |
+| `--check` 排除 ⑯ 的机器盖章块与判据版本行 | 盖章后的 48 行假差异 |
+
+另：`new_batch.py --out` 语义改为**终稿路径**，骨架写到 `--skeleton`（缺省 `<out 同目录>/skeleton.md`），
+两者相同即拒绝 —— 工具本身不再生成"就地重建"的配置（批次49 是在 e2e 里手工改 `out` 绕过的，现已不需要）。
+测试 `test_batch_slots.BuildGuardTests`（11 项）。
+
+### 11.5 另外两处"两套口径"（同轮修掉）
+
+- **清单哈希缺陷**：`gate_lecture --json` 的 `source_manifest_sha256` 取的是**位置契约清单**
+  （`<讲稿名>.blocks.json`），而 `sync_gate_result --manifest` 核对的是**批次源码清单**——名字像、内容不同，
+  于是盖章永远 ABORT。修法：闸门新增 `--manifest <本批源码清单>`（并在文本输出里打印用的是哪一份、
+  结果里记 `manifest_source`），`sync_gate_result` 在清单哈希不符时**直接把两者的取值与来源打出来**。
+- **零对象检查崩溃**（该修复在批次49 现场改在工作区、未提交）：`manifest` 在但正文没有可核对对象时，
+  `PASS(checked=0)` 被 `make_check` 拒绝 → `--json` 路径抛 ValueError。现降级为 `NOT_CHECKED` 并附说明。
+
+### 11.6 本轮的验证与仍然没解决的事
+
+```text
+python scripts/skill_selfcheck.py        # 检查项 112，失败 0 → PASS ✅（+7 项：清单覆盖 / 版本门同源 /
+                                         #   两条"假重建"护栏 / SYNC_API 依赖符号存在性）
+python scripts/v2_selfcheck.py           # PASS (6 contract entries)
+python -m unittest discover -s scripts -p "test_*.py" -t scripts   # Ran 137 tests OK（+25 项）
+python tests/e2e_scripted_run.py         # 26 步期望全中（+9 步：4 条负向 + 档位一致 + 盖章后 --check）
+```
+
+**没有解决的问题，如实写在下面**（不要把这轮修复读成"整批提速"）：
+
+1. **模型写作耗时仍未采集**：`batch_trace` 里 `investigate` / `write` 两个阶段标着"未测量"。
+   批次49 的 10 分钟写作是**按工具时间戳估算**的观察窗口，不是秒表实测。下一批开批时请用
+   `batch_trace.py` 分段打点（或手工记 `investigate`/`write` 起止），否则"提速"永远只能说脚本侧。
+2. **内容量本身没动**：17 节约 1900 行、④ 个分片的写作与手工归档仍要花时间；这轮只减少了"工具造成的返工"。
+   若目标是大幅缩短整批时间，下一步必须对**讲解篇幅与重复内容**做真实批次对照 + 读者盲评（§3.6 的路线），
+   不能仅凭脚本验收通过就宣称提速。
+3. **`make_check` 的 0 对象 PASS 仍是硬断言**：本轮只修了 G-PY 一处调用点并加了测试；
+   其余动态对象数的检查点若写出 `PASS(checked=0)` 仍会抛错（这是有意的编程错误护栏）。
+4. **`publish_batch.py` 本轮没被用上**：批次49 仍写了约 16 KB 的一次性归档脚本。工具已就绪，
+   下一批请直接用它（`--record` 一份记录更新覆盖矩阵/总索引/阶段页/状态，冲突零写入）。

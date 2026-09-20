@@ -114,6 +114,98 @@ class Batch48FixtureTests(unittest.TestCase):
             self.assertTrue(c["contract"], "每条检查都必须挂到 SSOT 条款 ID")
 
 
+class ManifestCoverageTests(unittest.TestCase):
+    """P-HASH 必须要求清单**覆盖注释计划里的全部源文件**（批次49 实录）。
+
+    当时的形态：4 个源文件分别 `batch_manifest.py prepare` 出 4 份清单，只把其中一份传给预检——
+    清单里那 1 个文件哈希是对的，于是 P-HASH PASS，而本批另外 3 个源文件**根本没被钉住**。
+    "清单里有的都合格"不等于"本批源码都被核过"，这就是漏检的形态。
+    """
+
+    SRC = str(B48 / "project")
+    PLAN = str(B48 / "b48_inject_plan_fixed.json")
+    MANIFEST = str(B48 / "b48_manifest.json")
+
+    def _run(self, tmp, manifests, plan=None):
+        out = os.path.join(tmp, "pre.json")
+        argv = ["--src", self.SRC, "--plan", plan or self.PLAN]
+        for m in manifests:
+            argv += ["--manifest", m]
+        argv += ["--json", out]
+        rc, text = run_main(argv)
+        return rc, text, load_result(out)
+
+    def _truncate(self, tmp, keep):
+        """按文件名子集裁一份清单（模拟"一个文件一份清单"）。"""
+        man = json.load(io.open(self.MANIFEST, encoding="utf-8"))
+        keys = [k for k in sorted(man["files"]) if os.path.basename(k) in keep]
+        man["files"] = {k: man["files"][k] for k in keys}
+        path = os.path.join(tmp, "one.json")
+        io.open(path, "w", encoding="utf-8", newline="").write(json.dumps(man, ensure_ascii=False, indent=1))
+        return path, keys
+
+    def test_full_manifest_covers_every_source_of_the_plan(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rc, text, result = self._run(tmp, [self.MANIFEST])
+            self.assertEqual(rc, 0, text)
+            ph = checks_by_id(result)["P-HASH"]
+            self.assertEqual(ph["status"], LC.PASS)
+            self.assertEqual(ph["checked"], 8)
+            self.assertIn("覆盖计划源文件 8/8", ph["note"])
+
+    def test_a_single_file_manifest_is_refused_and_names_the_missing_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path, keys = self._truncate(tmp, {"TableChunker.java"})
+            self.assertEqual(len(keys), 1)
+            rc, text, result = self._run(tmp, [path])
+            self.assertNotEqual(rc, 0)
+            ph = checks_by_id(result)["P-HASH"]
+            self.assertEqual(ph["status"], LC.FAIL)
+            blob = json.dumps(ph, ensure_ascii=False)
+            for missing in ("CodeChunker.java", "HeadingChunker.java", "HeadingHandler.java",
+                            "HtmlTableChunker.java", "ImageChunker.java", "ListChunker.java",
+                            "ParagraphChunker.java"):
+                self.assertIn(missing, blob, "缺件必须逐个点名：%s" % missing)
+            self.assertIn("没覆盖", blob)
+            self.assertIn("覆盖计划源文件 1/8", ph["note"])
+
+    def test_several_manifests_are_merged_and_cover_the_plan_together(self):
+        """4 份单文件清单一起传 → 合并后覆盖 8/8，P-HASH PASS（"每个文件一份清单"是允许的用法）。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            man = json.load(io.open(self.MANIFEST, encoding="utf-8"))
+            keys = sorted(man["files"])
+            paths = []
+            for i, k in enumerate(keys):
+                part = dict(man)
+                part["files"] = {k: man["files"][k]}
+                p = os.path.join(tmp, "m%d.json" % i)
+                io.open(p, "w", encoding="utf-8", newline="").write(
+                    json.dumps(part, ensure_ascii=False, indent=1))
+                paths.append(p)
+            self.assertEqual(len(paths), 8)
+            rc, text, result = self._run(tmp, paths)
+            self.assertEqual(rc, 0, text)
+            ph = checks_by_id(result)["P-HASH"]
+            self.assertEqual(ph["status"], LC.PASS)
+            self.assertEqual(ph["checked"], 8)
+            self.assertIn("合并 8 份清单", ph["note"])
+            self.assertTrue(result["source_manifest_sha256"], "多份清单也要给出确定性指纹")
+
+    def test_a_drifted_hash_is_still_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            man = json.load(io.open(self.MANIFEST, encoding="utf-8"))
+            first = sorted(man["files"])[0]
+            man["files"][first]["sha256"] = "0" * 64
+            path = os.path.join(tmp, "drift.json")
+            io.open(path, "w", encoding="utf-8", newline="").write(
+                json.dumps(man, ensure_ascii=False, indent=1))
+            rc, text, result = self._run(tmp, [path])
+            self.assertNotEqual(rc, 0)
+            ph = checks_by_id(result)["P-HASH"]
+            self.assertEqual(ph["status"], LC.FAIL)
+            self.assertIn("hash 不一致", json.dumps(ph, ensure_ascii=False))
+
+
 class PlanStructureTests(unittest.TestCase):
     def test_bad_keys_in_python_plan_are_all_reported(self):
         rc, text = run_main(["--src", str(PYMINI / "project"), "--plan",

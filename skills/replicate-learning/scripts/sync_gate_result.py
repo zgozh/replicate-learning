@@ -311,6 +311,19 @@ def main():
             print('[ABORT] 结果不能用于盖章：')
             for p in problems:
                 print('   - ' + p)
+            if manifest_sha and any('source_manifest_sha256' in p for p in problems):
+                # 批次49 实录：这里曾是最费时间的一处——"结果 source_manifest_sha256 ≠ 当前清单"
+                # 的真因是**两个都叫 manifest 的东西被混用**：闸门默认取"位置契约清单"，盖章核对的是
+                # "本批源码清单"。把两者的取值与来源直接打出来，别让人再去读源码猜。
+                _got = result.get('source_manifest_sha256')
+                _src = result.get('manifest_source') or (result.get('extra') or {}).get('manifest_source')
+                print('   → 这条多半是两个清单搞混了（它们不是同一个文件）：')
+                print('     · 盖章核对的 `--manifest`（本批源码清单，batch_manifest.py prepare 的产物）'
+                      'sha256=%s…' % manifest_sha[:16])
+                print('     · 结果里的 source_manifest_sha256=%s…（来源：%s）'
+                      % ((_got or 'None')[:16], _src or '未知（旧版闸门只看位置契约清单）'))
+                print('     · 修法：重跑闸门时加 `--manifest <本批源码清单>`（与盖章用**同一份**）；'
+                      '位置契约清单是 `<讲稿名>.blocks.json`，那是另一回事。')
             print('   → 重新跑一次 gate_lecture.py --json 生成**针对当前正文**的结果，再盖章。')
             return 1
         blocking = LC.blocking_checks(result)

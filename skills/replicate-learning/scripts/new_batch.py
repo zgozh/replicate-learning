@@ -16,12 +16,18 @@
     # 方案 §3.3：给每件生成**稳定源码槽位**（块身份 = 槽位 ID + 源路径，不再靠标题/contains 猜）
     python new_batch.py --stage 3 --batch 48 --title "…" --classes "…" --sha 16984b9 \\
         --out "…/批次48-….md" --src <仓库根> \\
-        --plan logs/b48_inject_plan.json --batch-json logs/b48_batch.json
+        --plan logs/b48_inject_plan.json --batch-json logs/b48_batch.json \\
+        --manifest logs/b48_manifest.json [--manifest logs/b48_manifest2.json]
+
+`--out` 是**终稿**路径，本命令**不写它**——骨架写到 `--skeleton`（缺省 `<out 同目录>/skeleton.md`），
+终稿由 `batch_build.py` 从「骨架 + 分片 + annotations.json」重建（2.30 修复：两者同路径会让"重建"
+退化成就地改旧正文，见 `batch_build.py` 顶部说明）。`--out` 与 `--skeleton` 相同即拒绝。
 
 产出：批头（一句话/核心类/验收结果/源码依据 commit）+ ①~⑯ + 索引，共 **17 个 `## ` 节**，
 其中 `⑦.5`、⑯ 六项空表、⑫ 八条与八段提示词标签都已就位；正文占位符沿用模板的 `__xxx__` 写法。
 带 `--plan` 时，⑥ 按计划逐件生成"件标题 + 槽位标记 + 空围栏"，槽位标记写明源路径、行段与
-源文件 sha256——**重复构建靠它寻址，不靠 `contains` 里那些注入后就消失的占位串**。
+源文件 sha256——**重复构建靠它寻址，不靠 `contains` 里那些注入后就消失的占位串**；
+同一份计划还会派生**唯一一份可编辑注释计划** `annotations.json`（`batch_build` 只认它）。
 
 不做的事：不生成任何讲解内容、不写任何代码、不跑闸门（跑闸门是下一步，命令会打印出来）。
 """
@@ -201,14 +207,16 @@ def main():
     ap.add_argument('--classes', default='', help='本批核心类，逗号分隔')
     ap.add_argument('--sha', default='', help='批头源码快照 commit sha（⑦~⑧ 位十六进制）')
     ap.add_argument('--verify', default='', help='快照定位依据（缺省按提交信息推断）')
-    ap.add_argument('--out', required=True, help='输出路径（相对 --src 或绝对路径）')
+    ap.add_argument('--out', required=True, help='**终稿**路径（相对 --src 或绝对路径；本命令不写它，由 batch_build 重建）')
+    ap.add_argument('--skeleton', help='骨架输出路径（缺省=<out 同目录>/skeleton.md；**必须与 --out 不同**）')
     ap.add_argument('--src', default=os.getcwd(), help='宿主仓库根目录（缺省=当前目录）')
-    ap.add_argument('--force', action='store_true', help='覆盖已存在的文件')
+    ap.add_argument('--force', action='store_true', help='覆盖已存在的骨架文件')
     ap.add_argument('--plan', help='注释计划 JSON：按它逐件生成⑥的槽位与件骨架（方案 §3.3）')
     ap.add_argument('--batch-json', dest='batch_json',
-                    help='同时写一份批次状态 batch.json（供 batch_build.py 组装/注入/复建）')
-    ap.add_argument('--parts-dir', dest='parts_dir', help='分片目录（缺省=<out 同目录>/parts）')
-    ap.add_argument('--manifest', help='本批源文件清单 JSON（记进 batch.json，供复建与校验）')
+                    help='同时写一份批次状态 batch.json（供 batch_build.py 组装/注入/复建；需与 --plan 同用）')
+    ap.add_argument('--parts-dir', dest='parts_dir', help='分片目录（缺省=<骨架同目录>/parts）')
+    ap.add_argument('--manifest', action='append',
+                    help='本批源文件清单 JSON（**可多次传**：一个文件一份清单时会全部记进 batch.json）')
     ap.add_argument('--print-skeleton', action='store_true', help='只打印骨架到标准输出（不写文件）')
     a = ap.parse_args()
 
@@ -240,19 +248,30 @@ def main():
         print(text)
         return 0
 
+    # `--out` 是**终稿**路径；骨架写到 `--skeleton`（缺省 <out 同目录>/skeleton.md）。
+    # 2.30 修复（批次49 实录）：此前骨架与终稿是同一个路径，于是 `batch_build` 的"重建"变成
+    # **就地重建**——省略 ⑥ 分片时旧 ⑥ 内容原样留在结果里，"重建"成了假象。骨架必须是独立文件。
     out = a.out if os.path.isabs(a.out) else os.path.join(os.path.abspath(a.src), a.out)
-    if os.path.exists(out) and not a.force:
-        raise SystemExit('[ABORT] %s 已存在（要覆盖请加 --force）' % out)
-    os.makedirs(os.path.dirname(out), exist_ok=True)
-    tmp = out + '.tmpnew'
-    io.open(tmp, 'w', encoding='utf-8', newline='').write(text)
-    os.replace(tmp, out)
+    skel = a.skeleton if a.skeleton else os.path.join(os.path.dirname(out), 'skeleton.md')
+    if not os.path.isabs(skel):
+        skel = os.path.join(os.path.abspath(a.src), skel)
+    if os.path.abspath(skel) == os.path.abspath(out):
+        raise SystemExit('[ABORT] 骨架与终稿不能是同一个路径（%s）：终稿必须由「骨架 + 分片 + 注释计划」'
+                         '派生，就地重建会拿旧正文冒充重建结果。' % out)
+    if os.path.exists(skel) and not a.force:
+        raise SystemExit('[ABORT] %s 已存在（要覆盖请加 --force）' % skel)
+    os.makedirs(os.path.dirname(skel), exist_ok=True)
+    tmp = skel + '.tmpnew'
+    with io.open(tmp, 'w', encoding='utf-8', newline='') as fh:
+        fh.write(text)
+    os.replace(tmp, skel)
 
     secs = re.findall(r'^## (.+)$', text, re.M)
     i12 = next(i for i, l in enumerate(text.split('\n')) if re.match(r'^##\s*' + CIRCLED[11] + r'\s', l))
     seg12 = '\n'.join(text.split('\n')[i12:])
     seg12 = seg12.split('\n## ' + CIRCLED[12])[0]
-    print('已生成 %s' % out)
+    print('已生成骨架 %s' % skel)
+    print('  终稿路径（重建目标，本次不写）：%s' % out)
     print('  节数 = %d（应为 17）｜⑦.5 = %s｜⑫ 八条 = %d｜八段提示词 = %d'
           % (len(secs), '有' if '#### ⑦.5' in text else '无',
              len(re.findall(r'^#### \d+\.', seg12, re.M)),
@@ -262,6 +281,9 @@ def main():
         for s in slots:
             print('     %-28s %s %d-%d' % (s['slot'], s['src'], s['start'], s['end']))
     if a.batch_json:
+        if not a.plan:
+            raise SystemExit('[ABORT] --batch-json 必须同时给 --plan：批次状态里的 `annotations` 是'
+                             '**由计划派生出的、含槽位的那一份可编辑注释计划**，没有计划就派生不出来。')
         bj = a.batch_json if os.path.isabs(a.batch_json) else os.path.join(os.path.abspath(a.src), a.batch_json)
         os.makedirs(os.path.dirname(bj), exist_ok=True)
         # 槽位 ID 必须同时存在于**骨架**与**注释计划**里，否则注入器两边对不上。
@@ -283,23 +305,38 @@ def main():
         ann_path = os.path.join(os.path.dirname(bj), "annotations.json")
         io.open(ann_path, 'w', encoding='utf-8', newline='').write(
             json.dumps(ann, ensure_ascii=False, indent=1) + '\n')
+        # 写完自断言：这一份必须存在且带槽位——`batch_build` 只认它（批次49 实录：
+        # batch.json 指回原始计划 + 手补槽位，工具却在旁边悄悄少了一份可编辑计划）。
+        if not os.path.isfile(ann_path):
+            raise SystemExit('[ABORT] 注释计划没写成功：%s' % ann_path)
+        _n_slot = len([b for b in ann["blocks"] if b.get("slot")])
+        if slots and not _n_slot:
+            raise SystemExit('[ABORT] 派生出的 annotations.json 里一个槽位都没有——'
+                             '计划里的 src/行段没解析出来，先修计划再开批。')
+        manifests = [os.path.abspath(m) for m in (a.manifest or [])]
         state = {
             "schema_version": 1,
             "batch_id": "stage%s-b%s" % (a.stage, a.batch),
             "title": a.title,
             "src": os.path.abspath(a.src),
-            "skeleton": out,
-            "parts_dir": a.parts_dir or os.path.join(os.path.dirname(out), 'parts'),
+            "skeleton": skel,
+            "parts_dir": a.parts_dir or os.path.join(os.path.dirname(skel), 'parts'),
             "annotations": ann_path,
-            "plan_source": os.path.abspath(a.plan) if a.plan else None,
-            "manifest": os.path.abspath(a.manifest) if a.manifest else None,
+            "annotations_slots": _n_slot,
+            "plan_source": os.path.abspath(a.plan),
+            "manifest": (manifests[0] if manifests else None),
+            "manifests": manifests,
             "out": out,
             "slots": slots,
             "contract_version": GATE_VERSION,
         }
         io.open(bj, 'w', encoding='utf-8', newline='').write(
             json.dumps(state, ensure_ascii=False, indent=1) + '\n')
-        print('  批次状态已写 %s（注释计划含槽位：%s）' % (bj, ann_path))
+        print('  批次状态已写 %s' % bj)
+        print('  可编辑的注释计划**只有一份**：%s（含 %d 个槽位；原始计划 %s 是输入，不要拿它当 annotations）'
+              % (ann_path, _n_slot, os.path.basename(state["plan_source"])))
+        if manifests:
+            print('  源文件清单 %d 份：%s' % (len(manifests), '、'.join(os.path.basename(m) for m in manifests)))
         print('  下一步：写分片到 %s → python scripts/batch_build.py --batch %s'
               % (state["parts_dir"], bj))
     print('  已从文件里剥离 %d 行模板指导语（写作须知，见下）——它们留在文件里会让 ⓪ 的自指检查 FAIL'

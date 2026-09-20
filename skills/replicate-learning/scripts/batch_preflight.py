@@ -27,6 +27,7 @@ import argparse
 import contextlib
 import io
 import json
+import hashlib
 import os
 import re
 import sys
@@ -583,7 +584,9 @@ def main():
     ap = argparse.ArgumentParser(description="开批预检：注入/写作之前把机器能判的问题一次报出来")
     ap.add_argument("--src", required=True, help="宿主仓库根目录")
     ap.add_argument("--plan", required=True, help="注释计划 JSON（与 inject_source 同一个 plan）")
-    ap.add_argument("--manifest", help="本批源文件清单 JSON（校验源文件未被改动）")
+    ap.add_argument("--manifest", action="append",
+                    help="本批源文件清单 JSON（**可多次传**，会合并；P-HASH 要求清单覆盖注释计划里的"
+                         "全部源文件，缺件直接 FAIL）")
     ap.add_argument("--lecture", help="已组装/已注入的讲解（可选：查寻址唯一性与教学片段）")
     ap.add_argument("--json", help="把结构化结果写到该路径")
     a = ap.parse_args()
@@ -600,32 +603,73 @@ def main():
 
     checks = []
     plan_findings = []
+    manifest_fp = None
     blocks, targets, checked_keys = check_plan(plan, src_root, plan_findings)
     checks.append(LC.make_check("P-PLAN", LC.FAIL if plan_findings else LC.PASS,
                                 checked=len(plan.get("blocks", [])) or 0, findings=plan_findings,
                                 note="核验 %d 个块 / %d 条注释键" % (len(blocks), checked_keys)))
 
     if a.manifest:
-        manifest = json.load(io.open(a.manifest, encoding="utf-8"))
+        # ① 多份清单合并（批次49 实录：4 个源文件分别 prepare 出 4 份清单，只传其中一份 → P-HASH 只核了 1 个文件）；
+        # ② **覆盖性**：清单必须覆盖注释计划用到的**全部**源文件，缺件直接 FAIL——
+        #    "清单里有的都合格"不等于"本批源码都被钉住了"，这正是漏检的形态（Goodhart）。
+        files, roots, names = {}, [], []
+        for mp in a.manifest:
+            man = json.load(io.open(mp, encoding="utf-8"))
+            names.append(os.path.basename(mp))
+            if man.get("source_root"):
+                roots.append(man["source_root"])
+            for rel, meta in (man.get("files") or {}).items():
+                key = rel.replace("\\", "/").lstrip("./")
+                files.setdefault(key, (os.path.basename(mp), meta))
+        # 结构化结果里的清单指纹：一份 = 文件 sha256；多份 = 各份「名字 + sha256」拼接后的 sha256（确定性）
+        if len(a.manifest) == 1:
+            manifest_fp = LC.sha256_file(a.manifest[0])
+        else:
+            payload = "\n".join("%s\t%s" % (os.path.basename(mp), LC.sha256_file(mp) or "?")
+                               for mp in a.manifest)
+            manifest_fp = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+        plan_rels = sorted({(b.get("rel") or "").replace("\\", "/").lstrip("./")
+                            for b in blocks if b.get("rel")})
+        missing = [r for r in plan_rels if r not in files]
         bad, checked = [], 0
-        for rel, meta in manifest.get("files", {}).items():
+        for rel in missing:
+            bad.append(LC.make_finding(
+                "清单**没覆盖**注释计划里的源文件：%s（%d 份清单合计 %d 个文件 / 本批计划用了 %d 个）"
+                "——缺件的清单不能当通过：把本批全部 --file 一次 `batch_manifest.py prepare` 成一份清单，"
+                "或把多份清单都 `--manifest` 传进来" % (rel, len(names), len(files), len(plan_rels)),
+                where=rel))
+        for rel in plan_rels:
+            if rel not in files:
+                continue
             checked += 1
             got = LC.sha256_file(os.path.join(src_root, rel))
             if got is None:
-                bad.append(LC.make_finding("清单里的源文件不存在：%s" % rel))
-            elif got != meta.get("sha256"):
-                bad.append(LC.make_finding("源文件已变化（hash 不一致）：%s" % rel, where=rel))
-        root = manifest.get("source_root")
-        note = None
-        if root and os.path.abspath(root) != src_root:
-            note = ("清单 source_root=%s 与 --src=%s 不同 → 按**相对路径**比对 hash（夹具/搬迁场景常见）；"
-                    "请确认这确实是同一份源码" % (root, src_root))
-        if not checked:
+                bad.append(LC.make_finding("清单里的源文件不存在：%s" % rel, where=rel))
+            elif got != files[rel][1].get("sha256"):
+                bad.append(LC.make_finding(
+                    "源文件已变化（hash 不一致，清单来自 %s）：%s" % (files[rel][0], rel), where=rel))
+        extra = sorted(set(files) - set(plan_rels))
+        note_bits = []
+        if len(names) > 1:
+            note_bits.append("合并 %d 份清单" % len(names))
+        note_bits.append("覆盖计划源文件 %d/%d" % (len(plan_rels) - len(missing), len(plan_rels)))
+        if extra:
+            note_bits.append("清单另有 %d 个不在本批计划里的文件（不参与判定）：%s"
+                             % (len(extra), "、".join(extra[:3])))
+        if roots and any(os.path.abspath(r) != src_root for r in roots):
+            note_bits.append("清单 source_root=%s 与 --src=%s 不同 → 按**相对路径**比对 hash"
+                             "（夹具/搬迁场景常见）；请确认这确实是同一份源码"
+                             % ("、".join(sorted(set(roots))), src_root))
+        if not plan_rels:
             checks.append(LC.make_check("P-HASH", LC.NOT_CHECKED, checked=0,
-                                        note="清单里一个文件都没有——不能当通过"))
+                                        note="注释计划里没有可核对的源文件 → 清单无处可比对（不能当通过）"))
+        elif not checked:
+            checks.append(LC.make_check("P-HASH", LC.NOT_CHECKED, checked=0, findings=bad,
+                                        note="清单没有覆盖本批任何一个源文件——不能当通过"))
         else:
             checks.append(LC.make_check("P-HASH", LC.FAIL if bad else LC.PASS,
-                                        checked=checked, findings=bad, note=note))
+                                        checked=checked, findings=bad, note="；".join(note_bits)))
 
     gate_checks, _notes = run_gate_style_checks(blocks, src_root)
     checks.extend(gate_checks)
@@ -655,7 +699,7 @@ def main():
 
     result = LC.make_result("batch_preflight.py", checks,
                             lecture_sha256=LC.sha256_file(lecture) if lecture else None,
-                            source_manifest_sha256=LC.sha256_file(a.manifest) if a.manifest else None,
+                            source_manifest_sha256=manifest_fp,
                             source_root=src_root,
                             extra={"scope": scope, "targets": targets})
     print(LC.render(result))

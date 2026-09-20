@@ -296,6 +296,30 @@ def check_tools(r):
     else:
         r.ok('声明了 GATE_API 的工具，其依赖符号在 gate 中全部存在')
 
+    # 跨工具耦合同样不许悄悄断：用了 `import sync_gate_result` 的工具必须声明 `SYNC_API`（2.30 新增）。
+    # 由来：`batch_build --check` 要靠 sync_gate_result 的盖章块识别常量把 ⑯ 的机器段排除在比对之外——
+    # 那三个常量一旦改名，`--check` 会开始报几十行假差异（"终稿重建不出来"的误导）。
+    import sync_gate_result as SGR    # noqa: E402
+    sync_bad = []
+    for fn in tools:
+        if fn == 'skill_selfcheck.py':      # 检查器自己只用 hasattr 做通用存在性校验，不消费具体符号
+            continue
+        src = read('scripts/' + fn) or ''
+        if 'import sync_gate_result' not in src:
+            continue
+        api = re.search(r'^SYNC_API\s*=\s*\[(.*?)\]', src, re.M | re.S)
+        if not api:
+            sync_bad.append('%s 用了 sync_gate_result 却没声明 SYNC_API' % fn)
+            continue
+        miss = [n for n in re.findall(r"'([A-Za-z_][A-Za-z0-9_]*)'", api.group(1))
+                if not hasattr(SGR, n)]
+        if miss:
+            sync_bad.append('%s → sync_gate_result 里找不到 %s' % (fn, '、'.join(miss)))
+    if sync_bad:
+        r.fail('工具依赖的 sync_gate_result 符号对不上：%s' % '；'.join(sync_bad))
+    else:
+        r.ok('声明了 SYNC_API 的工具，其依赖符号在 sync_gate_result 中全部存在')
+
 
 def check_safe_edit(r):
     """⑧ safe_edit 护栏负向自测（血证 H14）：用当初**真实失败的做法**验证它会被拒绝。
@@ -1046,6 +1070,34 @@ def check_preflight(r):
     else:
         r.fail('预检对修复后计划仍报 FAIL（rc=%s）——预检与闸门口径已经不一致' % rc2)
 
+    # P-HASH 必须要求清单**覆盖计划里的全部源文件**（2.30 修复，批次49 实录）。
+    # 当时 4 个源文件各出一份清单、只传一份 → 清单里那 1 个文件哈希正确 → P-HASH PASS，
+    # 而本批另外 3 个源文件根本没被钉住："清单里有的都合格"被当成了"本批源码都核过"。
+    full = os.path.join(fix, 'b48_manifest.json')
+    tmp_thin = tempfile.mktemp(suffix='.json')
+    man = json.load(io.open(full, encoding='utf-8'))
+    keep = sorted(man['files'])[0]
+    man['files'] = {keep: man['files'][keep]}
+    io.open(tmp_thin, 'w', encoding='utf-8', newline='').write(json.dumps(man, ensure_ascii=False))
+    out = tempfile.mktemp(suffix='.json')
+    old = sys.argv
+    sys.argv = ['batch_preflight.py', '--src', src, '--plan', os.path.join(fix, 'b48_inject_plan_fixed.json'),
+                '--manifest', tmp_thin, '--json', out]
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            rc_thin = P.main()
+    finally:
+        sys.argv = old
+    thin_checks = {c['id']: c for c in json.load(io.open(out, encoding='utf-8'))['checks']}
+    os.unlink(out)
+    os.unlink(tmp_thin)
+    blob = json.dumps(thin_checks['P-HASH'], ensure_ascii=False)
+    if rc_thin != 0 and thin_checks['P-HASH']['status'] == LC.FAIL and '没覆盖' in blob:
+        r.ok('预检：清单只覆盖 1/8 源文件 → P-HASH FAIL 并逐个点名缺件（缺件不能当通过）')
+    else:
+        r.fail('清单缺件竟然放过：rc=%s status=%s'
+               % (rc_thin, thin_checks['P-HASH']['status']))
+
     try:
         LC.make_check('P-DENSITY', LC.PASS, checked=0)
         r.fail('结果 schema 允许「0 对象 PASS」——真空通过会重新长出来')
@@ -1072,10 +1124,11 @@ def check_slots(r):
     tmp = tempfile.mkdtemp(prefix='slot_selfcheck_')
     try:
         skeleton = os.path.join(tmp, 'skeleton.md')
+        lec = os.path.join(tmp, '批次48.md')
         state_path = os.path.join(tmp, 'batch.json')
         old = sys.argv
         sys.argv = ['new_batch.py', '--stage', '3', '--batch', '48', '--title', 'x', '--classes', 'y',
-                    '--sha', '16984b9', '--out', skeleton, '--src', src,
+                    '--sha', '16984b9', '--out', lec, '--skeleton', skeleton, '--src', src,
                     '--plan', os.path.join(fix, 'b48_inject_plan_fixed.json'),
                     '--batch-json', state_path]
         try:
@@ -1092,6 +1145,31 @@ def check_slots(r):
                    % (text.count('<!-- src-slot'), len(state['slots'])))
             return
 
+        # 2.30 修复：骨架与终稿必须**两个不同文件**，且注释计划只有一份可编辑的（批次49 实录：
+        # 两者同路径 + annotations 指回原始计划 + 手补槽位，让"重建"退化成就地改旧正文）。
+        if (os.path.normcase(state['skeleton']) != os.path.normcase(state['out'])
+                and os.path.isfile(state['annotations'])
+                and os.path.normcase(state['annotations']) != os.path.normcase(state['plan_source'])
+                and state.get('annotations_slots') == 8):
+            r.ok('槽位：batch.json 里骨架 ≠ 终稿、注释计划只有一份（含 8 个槽位）')
+        else:
+            r.fail('batch.json 配置不合格：skeleton=%s out=%s annotations=%s slots=%s'
+                   % (state['skeleton'], state['out'], state['annotations'],
+                      state.get('annotations_slots')))
+
+        same = dict(state)
+        same['out'] = same['skeleton']                     # 造"就地重建"的配置
+        try:
+            import batch_build as BB                        # noqa: E402
+            with contextlib.redirect_stdout(io.StringIO()):
+                BB.build(same)
+            r.fail('skeleton==out 竟然被放行——"省略分片也能重建"的假象会复发')
+        except SystemExit as exc:
+            if '同一个路径' in str(exc):
+                r.ok('槽位：skeleton==out（就地重建）被拒绝，并给出改法')
+            else:
+                r.fail('skeleton==out 拒绝理由不对：%s' % str(exc)[:90])
+
         with contextlib.redirect_stdout(io.StringIO()):
             rc1 = INJ.main_with(['inject_source.py', skeleton, str(state['annotations']), '--src', src])
         first = io.open(skeleton, 'rb').read()
@@ -1102,6 +1180,22 @@ def check_slots(r):
         else:
             r.fail('槽位注入不幂等：rc=%s/%s，文件是否变化=%s'
                    % (rc1, rc2, io.open(skeleton, 'rb').read() != first))
+
+        # 缺分片不许借"旧内容"通过：⑥ 的分片被删掉时，⑥ 仍是骨架里的模板占位原文 → 必须拒绝
+        parts_dir = os.path.join(tmp, 'parts')
+        shutil.copytree(os.path.join(fix, 'parts'), parts_dir)
+        os.unlink(os.path.join(parts_dir, 'b48_part_6.md'))
+        gap = dict(state)
+        gap['parts_dir'] = parts_dir
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                BB.build(gap)
+            r.fail('缺 ⑥ 分片竟然通过了构建——"旧正文冒充重建结果"会复发')
+        except SystemExit as exc:
+            if '模板占位原文' in str(exc):
+                r.ok('槽位：缺分片 → 拒绝构建并点名"仍是模板占位原文"的节')
+            else:
+                r.fail('缺分片的拒绝理由不对：%s' % str(exc)[:90])
 
         drifted = os.path.join(tmp, 'src')
         shutil.copytree(src, drifted)
@@ -1221,6 +1315,29 @@ def check_structured_result(r):
             r.ok('盖章前置校验：verdict=`BYPASS` 之类含 PASS 的文本 → 拒绝（只认 PASS / 总判定: PASS）')
         else:
             r.fail('verdict 判定过宽：BYPASS 被当作通过（%s）' % bad_verdict)
+
+        # ── 2.30 修复：判据版本门只有一个口径（批次49 实录："盖章前 PASS、盖章后失败"）──
+        # 旧 `style_scope` 只认「判据 vX.Y」，认不出 ⑯ 的规范字段「**判据版本：v2.30**」：
+        # 首跑判报告档（缺口只报不判红），盖章写进表头「判据 v2.30」后同一份正文升 FAIL 档。
+        pre = ['## ⑯ 教材质量自检', '',
+               '**判据版本：v2.30**（本批按此版判据验收；判据变更见 references/第一册质量细则.md §6.6）。']
+        post = (['## ⑯ 教材质量自检',
+                 '**七组闸门实测**（判据 v2.30，结构化结果 schema v1，无阻塞项）**：', '',
+                 '| 规则 ID | 检查组 | 核验对象 | 结论 |', '|---|---|---|---|',
+                 '| `G-STRUCT` | ⓪ 结构 | 17 | 通过 |', '',
+                 '> 本表由 `scripts/sync_gate_result.py` 从**结构化结果**渲染；判据版本 v2.30。']
+                + pre[1:])
+        scopes = [(G.style_scope, 3), (G.core_scope, 2), (G.form_scope, 2), (G.snip_scope, 2)]
+        mismatch = [f.__name__ for f, n in scopes if f(pre)[:n] != f(post)[:n]]
+        strict_pre = G.style_scope(pre)
+        if not mismatch and strict_pre[:3] == (True, True, True):
+            r.ok('版本门：⑯ 的规范版本字段被识别，首次门禁与盖章后档位一致（⓪e/⓪f 不再"盖后才变红"）')
+        else:
+            r.fail('版本门口径不一致：%s；style_scope(未盖章)=%s' % (mismatch, strict_pre))
+        if G.style_scope(['## ⑯ 教材质量自检', '', '| 1 | ✅ |'])[3] is None:
+            r.ok('版本门：⑯ 没写版本 → 报告档（存量不追溯），不会凭空判红')
+        else:
+            r.fail('⑯ 没写版本却拿到了版本号——版本门又出现了第二个来源')
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -1408,11 +1525,11 @@ def main():
     check_record_shape_sc(r)
     print('\n⑳ sync_gate_result 实测块替换幂等（2.29 / BUG-S1）：不许每跑一次堆一张旧表')
     check_sync_idempotent(r)
-    print('\n㉑ 开批预检（方案 §3.2）：用真实批次48 夹具钉住验收数字')
+    print('\n㉑ 开批预检（方案 §3.2）：真实批次48 验收数字 + 清单必须覆盖全部源文件')
     check_preflight(r)
-    print('\n㉒ 稳定源码槽位与可重复构建（方案 §3.3）：幂等 + hash 漂移拒绝')
+    print('\n㉒ 稳定源码槽位与可重复构建（方案 §3.3）：幂等 + hash 漂移拒绝 + 三条"假重建"护栏')
     check_slots(r)
-    print('\n㉓ 结构化门禁结果与盖章闭环（方案 §3.4）：稳定 ID / 无真空 PASS / 哈希绑定')
+    print('\n㉓ 结构化门禁结果与盖章闭环（方案 §3.4）：稳定 ID / 无真空 PASS / 哈希绑定 / 版本门同源')
     check_structured_result(r)
     print('\n㉔ 发布器先验后写（方案 §3.5）：冲突零写入 / 幂等 / 哈希绑定')
     check_publish(r)

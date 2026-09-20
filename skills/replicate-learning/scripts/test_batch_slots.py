@@ -35,19 +35,21 @@ def digest(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
-def run_new_batch(tmp, plan, title="智能切片策略", classes="TableChunker★", out_name="skeleton.md",
-                  src=SRC48):
+def run_new_batch(tmp, plan, title="智能切片策略", classes="TableChunker★", out_name="批次48.md",
+                  skeleton_name="skeleton.md", src=SRC48, extra_argv=()):
+    """生成骨架 + batch.json。`--out` 是终稿、`--skeleton` 是骨架（2.30 起两者必须不同路径）。"""
     out = str(Path(tmp) / out_name)
+    skeleton = str(Path(tmp) / skeleton_name)
     state = str(Path(tmp) / "batch.json")
     argv = sys.argv
     sys.argv = ["new_batch.py", "--stage", "3", "--batch", "48", "--title", title,
-                "--classes", classes, "--sha", "16984b9", "--out", out, "--src", str(src),
-                "--plan", str(plan), "--batch-json", state]
+                "--classes", classes, "--sha", "16984b9", "--out", out, "--skeleton", skeleton,
+                "--src", str(src), "--plan", str(plan), "--batch-json", state] + list(extra_argv)
     try:
         NB.main()
     finally:
         sys.argv = argv
-    return out, json.load(io.open(state, encoding="utf-8"))
+    return skeleton, json.load(io.open(state, encoding="utf-8"))
 
 
 class SlotMechanicsTests(unittest.TestCase):
@@ -215,7 +217,6 @@ class BatchBuildTests(unittest.TestCase):
         io.open(state_path, "w", encoding="utf-8", newline="").write(
             json.dumps(state, ensure_ascii=False, indent=1))
         return state_path, skeleton, state
-
     def test_rebuild_is_repeatable_from_parts(self):
         state_path, _skeleton, state = self._state(with_parts=True)
         text1, rep1 = BB.build(state)
@@ -235,7 +236,7 @@ class BatchBuildTests(unittest.TestCase):
         self.assertEqual(len(report["injected"]), 8)
 
     def test_check_detects_a_stale_product(self):
-        state_path, _skeleton, state = self._state(with_parts=False)
+        state_path, _skeleton, state = self._state(with_parts=True)
         argv = sys.argv
         sys.argv = ["batch_build.py", "--batch", str(state_path)]
         try:
@@ -267,6 +268,162 @@ class BatchBuildTests(unittest.TestCase):
         text, _rep = BB.build(state)
         _pre, sections = AB.split_sections(text, allow_preamble=True)
         self.assertEqual(len(sections), 17)
+
+
+class BuildGuardTests(unittest.TestCase):
+    """2.30 修复（批次49 实录）：四条 fail-closed 护栏，每条都对应一次真实的"假重建"。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _state(self, with_parts=True):
+        skeleton, state = run_new_batch(self.root, B48 / "b48_inject_plan_fixed.json")
+        if with_parts:
+            parts = self.root / "parts"
+            parts.mkdir()
+            for fn in os.listdir(B48 / "parts"):
+                shutil.copyfile(B48 / "parts" / fn, parts / fn)
+            state["parts_dir"] = str(parts)
+        state_path = self.root / "batch.json"
+        io.open(state_path, "w", encoding="utf-8", newline="").write(
+            json.dumps(state, ensure_ascii=False, indent=1))
+        return state_path, skeleton, state
+
+    def test_new_batch_refuses_identical_skeleton_and_out(self):
+        argv = sys.argv
+        same = str(self.root / "x.md")
+        sys.argv = ["new_batch.py", "--stage", "3", "--batch", "48", "--title", "t",
+                    "--out", same, "--skeleton", same, "--src", str(SRC48),
+                    "--plan", str(B48 / "b48_inject_plan_fixed.json")]
+        try:
+            with self.assertRaises(SystemExit) as ctx:
+                NB.main()
+            self.assertIn("同一个路径", str(ctx.exception))
+        finally:
+            sys.argv = argv
+
+    def test_new_batch_refuses_batch_json_without_a_plan(self):
+        argv = sys.argv
+        sys.argv = ["new_batch.py", "--stage", "3", "--batch", "48", "--title", "t",
+                    "--out", str(self.root / "批次48.md"), "--skeleton", str(self.root / "skel.md"),
+                    "--src", str(SRC48), "--batch-json", str(self.root / "batch.json")]
+        try:
+            with self.assertRaises(SystemExit) as ctx:
+                NB.main()
+            self.assertIn("--plan", str(ctx.exception))
+        finally:
+            sys.argv = argv
+
+    def test_state_points_at_one_editable_annotation_plan(self):
+        _state_path, _skeleton, state = self._state()
+        self.assertNotEqual(os.path.normcase(state["skeleton"]), os.path.normcase(state["out"]))
+        self.assertTrue(os.path.isfile(state["annotations"]))
+        self.assertNotEqual(os.path.normcase(state["annotations"]),
+                            os.path.normcase(state["plan_source"]))
+        self.assertEqual(state["annotations_slots"], 8)
+        plan = json.load(io.open(state["annotations"], encoding="utf-8"))
+        self.assertEqual(len([b for b in plan["blocks"] if b.get("slot")]), 8)
+
+    def test_identical_skeleton_and_out_in_batch_json_is_refused(self):
+        _state_path, _skeleton, state = self._state()
+        state["out"] = state["skeleton"]
+        with self.assertRaises(SystemExit) as ctx:
+            BB.build(state)
+        self.assertIn("同一个路径", str(ctx.exception))
+
+    def test_annotations_pointing_back_at_the_raw_plan_is_refused(self):
+        _state_path, _skeleton, state = self._state()
+        state["annotations"] = state["plan_source"]
+        with self.assertRaises(SystemExit) as ctx:
+            BB.build(state)
+        self.assertIn("plan_source", str(ctx.exception))
+
+    def test_empty_parts_dir_is_refused_by_default(self):
+        _state_path, _skeleton, state = self._state(with_parts=False)
+        with self.assertRaises(SystemExit) as ctx:
+            BB.build(state)
+        self.assertIn("一个 .md 都没有", str(ctx.exception))
+        # 明知骨架里已写全正文时，显式放行
+        text, report = BB.build(state, allow_no_parts=True)
+        self.assertEqual(report["sections"], 17)
+        self.assertTrue(text)
+
+    def test_missing_sixth_part_cannot_borrow_the_old_product(self):
+        """缺 ⑥ 分片时，⑥ 仍是骨架里的模板占位原文 → 必须拒绝（不得把旧 ⑥ 当"重建结果"）。"""
+        _state_path, _skeleton, state = self._state()
+        (Path(state["parts_dir"]) / "b48_part_6.md").unlink()
+        with self.assertRaises(SystemExit) as ctx:
+            BB.build(state)
+        msg = str(ctx.exception)
+        self.assertIn("模板占位原文", msg)
+        self.assertIn("⑥", msg)
+
+    def test_parts_dir_lost_entirely_is_refused(self):
+        _state_path, _skeleton, state = self._state()
+        state["parts_dir"] = str(self.root / "nope")
+        with self.assertRaises(SystemExit) as ctx:
+            BB.build(state)
+        self.assertIn("一个 .md 都没有", str(ctx.exception))
+
+    def test_check_ignores_the_machine_stamp(self):
+        """盖章后的终稿（⑯ 多出机器块 + 版本行被刷新）不得报"重建不一致"。"""
+        state_path, _skeleton, state = self._state()
+        argv = sys.argv
+        sys.argv = ["batch_build.py", "--batch", str(state_path)]
+        try:
+            self.assertEqual(BB.main(), 0)
+            out = Path(state["out"])
+            lines = out.read_text(encoding="utf-8").split("\n")
+            i16 = next(k for k, l in enumerate(lines) if l.startswith("## ⑯"))
+            stamp = ["**七组闸门实测**（判据 v2.30，结构化结果 schema v1，无阻塞项）**：", "",
+                     "| 规则 ID | 检查组 | 核验对象 | 结论 |", "|---|---|---|---|",
+                     "| `G-STRUCT` | ⓪ 结构 | 17 | 通过 |", "",
+                     "> 本表由 `scripts/sync_gate_result.py` 从**结构化结果**渲染；判据版本 v2.30。"]
+            lines[i16 + 1:i16 + 1] = stamp
+            out.write_text("\n".join(lines), encoding="utf-8")
+            sys.argv = ["batch_build.py", "--batch", str(state_path), "--check"]
+            self.assertEqual(BB.main(), 0, "⑯ 的机器盖章块与版本行必须被排除在重建比对之外")
+            # 正文真被改坏时仍然要报
+            out.write_text(out.read_text(encoding="utf-8").replace("**本批一句话**", "**本批一句话被改**"),
+                           encoding="utf-8")
+            self.assertEqual(BB.main(), 1)
+        finally:
+            sys.argv = argv
+
+    def test_strip_machine_stamp_removes_block_and_normalises_version(self):
+        # 版式与真文件一致：机器块插在 `## ⑯` 之后、判据版本行之前（`sync_gate_result.write_block` 的落点）
+        text = ("## ⑯ 教材质量自检\n"
+                "**七组闸门实测**（判据 v2.30，结构化结果 schema v1）：\n\n"
+                "| 规则 ID | 检查组 | 核验对象 | 结论 |\n|---|---|---|---|\n"
+                "| `G-STRUCT` | ⓪ 结构 | 17 | 通过 |\n\n"
+                "> 本表由 `scripts/sync_gate_result.py` 生成；判据版本 v2.30。\n\n"
+                "**判据版本：v2.29**（本批按此版判据验收）。\n\n"
+                "| 自检项 | 结论 |\n|---|---|\n| 1. 初学者能否看懂 | ✅ |\n")
+        out = BB.strip_machine_stamp(text)
+        self.assertNotIn("七组闸门实测", out)
+        self.assertNotIn("G-STRUCT", out)
+        self.assertIn("**判据版本：<盖章版本>**", out)
+        self.assertIn("| 1. 初学者能否看懂 | ✅ |", out, "机器块以外的正文必须逐字保留")
+
+    def test_check_accepts_a_product_whose_version_line_was_refreshed(self):
+        """骨架/分片写的是旧版本号、盖章把它刷成当前版 —— 这是正常流程，不得报「不一致」。"""
+        state_path, _skeleton, state = self._state()
+        argv = sys.argv
+        sys.argv = ["batch_build.py", "--batch", str(state_path)]
+        try:
+            self.assertEqual(BB.main(), 0)
+            out = Path(state["out"])
+            text = out.read_text(encoding="utf-8")
+            self.assertIn("**判据版本：", text)
+            out.write_text(text.replace("**判据版本：v2.30**", "**判据版本：v2.31**", 1), encoding="utf-8")
+            sys.argv = ["batch_build.py", "--batch", str(state_path), "--check"]
+            self.assertEqual(BB.main(), 0, "判据版本行由 sync 刷新，不属于重建差异")
+        finally:
+            sys.argv = argv
 
 
 if __name__ == "__main__":

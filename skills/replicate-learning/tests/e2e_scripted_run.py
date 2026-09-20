@@ -123,8 +123,9 @@ def main():
                                  '--manifest', MANIFEST, '--json', os.path.join(work, 'pre_fixed.json')]),
           '预检：修复后计划（预期 PASS）', expect_out=['→ PASS'])
 
-    # ── inject：脚手架（槽位）→ 组装真实分片 → 注入 → 重复构建校验 ──
+    # ── inject：脚手架（骨架与终稿**分开**）→ 组装真实分片 → 注入 → 重复构建校验 ──
     skel = os.path.join(work, 'skeleton.md')
+    lec = os.path.join(work, '批次48.md')
     state = os.path.join(work, 'batch.json')
     parts = os.path.join(work, 'parts')
     os.makedirs(parts)
@@ -132,23 +133,96 @@ def main():
         shutil.copyfile(os.path.join(FIX, 'batch48', 'parts', fn), os.path.join(parts, fn))
     phase('prepare', lambda: run([tool('new_batch.py'), '--stage', '3', '--batch', '48',
                                   '--title', '智能切片策略', '--classes', 'TableChunker★',
-                                  '--sha', '16984b9', '--out', skel, '--src', SRC48,
-                                  '--plan', PLAN_FIXED, '--batch-json', state]),
-          '脚手架：17 节骨架 + 8 个稳定槽位', expect_out=['节数 = 17', '8 个源码槽位'])
+                                  '--sha', '16984b9', '--out', lec, '--skeleton', skel, '--src', SRC48,
+                                  '--plan', PLAN_FIXED, '--batch-json', state,
+                                  '--manifest', MANIFEST]),
+          '脚手架：骨架与终稿分开 + 8 个稳定槽位', expect_out=['节数 = 17', '8 个源码槽位', '终稿路径'])
     st = json.load(io.open(state, encoding='utf-8'))
-    st['parts_dir'] = parts
-    st['out'] = os.path.join(work, '批次48.md')
-    io.open(state, 'w', encoding='utf-8', newline='').write(json.dumps(st, ensure_ascii=False, indent=1))
+    ok = (os.path.normcase(st['skeleton']) != os.path.normcase(st['out'])
+          and os.path.isfile(st['annotations'])
+          and os.path.normcase(st['annotations']) != os.path.normcase(st['plan_source'])
+          and st.get('annotations_slots') == 8 and st.get('manifests'))
+    steps.append(dict(phase='prepare', rc=0 if ok else 1, ms=0.0,
+                      note='batch.json 只有一份可编辑注释计划、且骨架 ≠ 终稿', expect_rc=[0],
+                      expect_out=[], ok=ok,
+                      problems=[] if ok else ['batch.json 配置不合格：%s' % st],
+                      head=''))
+    if not ok:
+        mismatches.append('batch.json 配置不合格（骨架/终稿/注释计划）：%s' % st)
     phase('inject', lambda: run([tool('batch_build.py'), '--batch', state]),
           '组装（真实分片）+ 注入（槽位/兼容旧格式）', expect_out=['注入 8 块', '节数=17'])
     phase('inject', lambda: run([tool('batch_build.py'), '--batch', state, '--check']),
           '重复构建 → 与磁盘一致（幂等）', expect_out=['一致'])
 
+    # ── 负向：三种"假重建"配置必须被拒绝（批次49 实录）──
+    def bad_state(name, mutate):
+        d = json.load(io.open(state, encoding='utf-8'))
+        mutate(d)
+        p = os.path.join(work, name)
+        io.open(p, 'w', encoding='utf-8', newline='').write(json.dumps(d, ensure_ascii=False, indent=1))
+        return p
+
+    same_path = bad_state('batch_same_path.json',
+                          lambda d: (d.update(out=d['skeleton']), d.update(parts_dir=parts)))
+    phase('inject', lambda: run([tool('batch_build.py'), '--batch', same_path]),
+          '负向：skeleton==out（就地重建）必须被拒', expect_rc=1, expect_out=['同一个路径'])
+    raw_plan = bad_state('batch_raw_plan.json',
+                         lambda d: (d.update(annotations=d['plan_source']), d.update(parts_dir=parts)))
+    phase('inject', lambda: run([tool('batch_build.py'), '--batch', raw_plan]),
+          '负向：annotations 指回原始注入计划必须被拒', expect_rc=1, expect_out=['plan_source'])
+    parts_less = os.path.join(work, 'parts_no6')
+    shutil.copytree(parts, parts_less)
+    os.remove(os.path.join(parts_less, 'b48_part_6.md'))
+    missing6 = bad_state('batch_missing6.json', lambda d: d.update(parts_dir=parts_less))
+    phase('inject', lambda: run([tool('batch_build.py'), '--batch', missing6]),
+          '负向：缺 ⑥ 分片不得借旧终稿通过', expect_rc=1, expect_out=['模板占位原文', '⑥'])
+    thin_manifest = os.path.join(work, 'manifest_one.json')
+    _man = json.load(io.open(MANIFEST, encoding='utf-8'))
+    _keep = sorted(_man['files'])[0]
+    _man['files'] = {_keep: _man['files'][_keep]}
+    io.open(thin_manifest, 'w', encoding='utf-8', newline='').write(
+        json.dumps(_man, ensure_ascii=False, indent=1))
+    phase('prepare', lambda: run([tool('batch_preflight.py'), '--src', SRC48, '--plan', PLAN_FIXED,
+                                  '--manifest', thin_manifest]),
+          '负向：清单只覆盖 1/8 源文件必须 FAIL', expect_rc=1, expect_out=['没覆盖', '覆盖计划源文件 1/8'])
+
+    # ── 版本门：首次门禁与盖章后**档位必须一致**（否则会出现"盖章前 PASS、盖章后失败"）──
+    def tiers(text):
+        found = {}
+        for key in ('⓪b', '⓪d', '⓪e', '⓪f'):
+            for line in text.split('\n'):
+                if key in line and ('FAIL 档' in line or '报告档' in line):
+                    found[key] = 'FAIL 档' if 'FAIL 档' in line else '报告档'
+                    break
+        return found
+
+    rc_pre, out_pre, _ = phase('gate', lambda: run([tool('gate_lecture.py'), lec, '--src', SRC48,
+                                                    '--manifest', MANIFEST,
+                                                    '--json', os.path.join(work, 'gate_built.json')]),
+                               '门禁（重建产物 · 首跑未盖章）',
+                               expect_out=['总判定: PASS', '源码清单'])
+    tier_pre = tiers(out_pre)
+    phase('verify', lambda: run([tool('sync_gate_result.py'), lec, '--src', SRC48,
+                                 '--result-json', os.path.join(work, 'gate_built.json'),
+                                 '--manifest', MANIFEST, '--apply',
+                                 '--final-json', os.path.join(work, 'gate_built.final.json')]),
+          '盖章（重建产物）', expect_out=['盖章后复跑闸门通过'])
+    rc_post, out_post, _ = phase('gate', lambda: run([tool('gate_lecture.py'), lec, '--src', SRC48,
+                                                      '--manifest', MANIFEST]),
+                                 '门禁（重建产物 · 盖章后）', expect_out=['总判定: PASS'])
+    tier_post = tiers(out_post)
+    ok = bool(tier_pre) and tier_pre == tier_post
+    steps.append(dict(phase='gate', rc=0 if ok else 1, ms=0.0,
+                      note='首次门禁与盖章后档位一致（⓪b/⓪d/⓪e/⓪f）', expect_rc=[0], expect_out=[],
+                      ok=ok, problems=[] if ok else ['首跑 %s ≠ 盖章后 %s' % (tier_pre, tier_post)],
+                      head=''))
+    if not ok:
+        mismatches.append('版本门档位不一致：首跑 %s ≠ 盖章后 %s' % (tier_pre, tier_post))
+    phase('inject', lambda: run([tool('batch_build.py'), '--batch', state, '--check']),
+          '盖章后重复构建：⑯ 机器块不参与比对', expect_out=['一致'])
+
     # ── gate / verify / publish：有真实教材时跑完整闭环（在临时项目副本上盖章与发布）──
     if have_real:
-        phase('gate', lambda: run([tool('gate_lecture.py'), st['out'], '--src', SRC48,
-                                   '--json', os.path.join(work, 'gate_built.json')]),
-              '门禁（重建产物）', expect_out=['总判定: PASS'])
         proj = os.path.join(work, 'proj')
         os.makedirs(os.path.join(proj, 'NOTES', '教学讲解'))
         lec_copy = os.path.join(proj, 'NOTES', '教学讲解', '批次48-智能切片.md')

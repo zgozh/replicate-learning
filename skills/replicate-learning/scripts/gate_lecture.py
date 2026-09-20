@@ -12,7 +12,15 @@ gate_lecture.py —— 批次讲解「内容真实性 + 注释密度 + 行号一
 用法：
     python gate_lecture.py <批次讲解.md> --src <源码根目录>
         [--snapshot <commit>]   # 不传则自动读批头「源码依据：commit <sha>」
+        [--manifest <本批源码清单.json>]   # 显式指定 `batch_manifest.py prepare` 的产物
         [--json out.json] [--verbose]
+
+`--manifest` 与"位置契约清单"是两样东西，别混（批次49 实录：混了会让盖章永远 ABORT）：
+  · `--manifest`（本批源码清单）：`batch_manifest.py prepare` 产出的**源文件 sha256 清单**，
+    `sync_gate_result.py --manifest` 校验的就是它 → 结构化结果里的 `source_manifest_sha256` 取它；
+  · 位置契约清单（`<讲稿名>.blocks.json`，讲稿旁 / `_tools/` / `NOTES/_tools/`）：①p/②p/④p 的归属口径，
+    只影响"位置级 vs 归属级"的档位，与 `--manifest` 无关。
+不给 `--manifest` 时，`source_manifest_sha256` 退回位置契约清单的哈希（旧行为，兼容存量）。
 
 五项检查（任一不过 = 退出码 1）：
   ① 正向保真度：讲解里每个 java 代码块（凭类名归属源文件）的每一行代码，
@@ -1185,11 +1193,24 @@ R3_MARKS = ("未完成", "草稿", "进行中")
 _DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
+# ── 判据版本的**唯一识别口径**（2.30 修复 · 血证 H27 家族） ─────────────────────
+# `⑯` 的规范版本字段是 `**判据版本：v2.30**`；盖章表头写的是 `判据 v2.30`——**同一件事的两种形态**。
+# 曾经 `style_scope()` 自带一个只认后者的正则，于是**同一份正文首跑判"报告档"、盖章后升 FAIL 档**：
+# 批次49 实录（G-BATCH3 ⓪f 盖章前 REPORT、盖章后 FAIL）导致"盖章前 PASS、盖章后失败"的反复排查。
+# "判据只在它能识别的形态上生效 = 最大的绕过口"（H27）——所以版本门只留**这一个来源**：
+# `⑯` 段里的版本字段；字段写不出来时才退回宽松 `vX.Y`。core/form/snip/style 四个门全部走它。
+VER_FIELD_RE = re.compile(r"判据\s*(?:版\s*本)?\s*[:：]?\s*v?(\d+\.\d+)")
+VER_LOOSE_RE = re.compile(r"\bv(\d+\.\d+)\b")
+
+
+def find_versions(txt):
+    """按「规范版本字段优先、宽松 vX.Y 兜底」取版本号列表（可能为空）。"""
+    return VER_FIELD_RE.findall(txt) or VER_LOOSE_RE.findall(txt)
+
+
 def declared_version(lines):
     """全文里最后出现的判据版本（记录类文件没有 16 节，ver_marker 用不了）。"""
-    txt = "\n".join(lines)
-    vs = (re.findall(r"判据\s*(?:版\s*本)?\s*[:：]?\s*v?([\d]+\.[\d]+)", txt)
-          or re.findall(r"\bv([\d]+\.[\d]+)\b", txt))
+    vs = find_versions("\n".join(lines))
     return vs[-1] if vs else None
 
 
@@ -1588,17 +1609,25 @@ MINSNIP_RE = re.compile(r"可照抄的最小调用|最小可编译实现|教学�
 
 
 def style_scope(lines):
-    """返回 (strict_e17, strict_e810, strict_e11, ver)：2.26→E1-E7；2.27→E8-E10；2.28→E11。"""
-    vs = re.findall(r"判据\s*v?([\d]+\.[\d]+)", "\n".join(lines))
-    if not vs:
-        return False, False, False, None
-    which = vs[-1]
-    try:
-        f = float(which)
-        return (f >= float(STYLE_FAIL_SINCE), f >= float(STYLE2_FAIL_SINCE),
-                f >= float(STYLE3_FAIL_SINCE), which)
-    except ValueError:
-        return False, False, False, which
+    """返回 (strict_e17, strict_e810, strict_e11, ver)：2.26→E1-E7；2.27→E8-E10；2.28→E11。
+
+    **版本来源与 core/form/snip 三门完全同一个**（`ver_marker` = `⑯` 段的规范版本字段）。
+    2.30 修复（批次49 实录）：本函数原先自带一个只认「判据 vX.Y」的正则，识别不了规范字段
+    「**判据版本：v2.30**」——
+      · 首跑：⑯ 只有规范字段 → 认不出 → ⓪e/⓪f 落"报告档"，结构缺口只报不判红（退出码 0）；
+      · 盖章：`sync_gate_result` 写进表头「判据 v2.30」→ 同一份正文被认出来 → 同一批缺口升 FAIL 档。
+    结果就是"盖章前 PASS、盖章后失败"，而正文一个字没改。**版本门必须只有一个来源**：
+    现在首跑与盖章后口径一致，首跑就报全量错误。
+    """
+    has_v, which, _ = ver_marker(lines)
+    if has_v and which:
+        try:
+            f = float(which)
+            return (f >= float(STYLE_FAIL_SINCE), f >= float(STYLE2_FAIL_SINCE),
+                    f >= float(STYLE3_FAIL_SINCE), which)
+        except ValueError:
+            return False, False, False, which
+    return False, False, False, which
 
 
 def _seg_paras(seg):
@@ -2132,7 +2161,7 @@ def ver_marker(lines):
     if not m:
         return False, None, False
     seg = txt[m.start():]
-    vs = re.findall(r"判据\s*v?([\d]+\.[\d]+)", seg) or re.findall(r"\bv([\d]+\.[\d]+)\b", seg)
+    vs = find_versions(seg)
     return bool(vs), (vs[-1] if vs else None), GATE_VERSION in seg
 
 
@@ -2247,6 +2276,17 @@ def main():
     jout = None
     if "--json" in sys.argv:
         jout = sys.argv[sys.argv.index("--json") + 1]
+    # `--manifest`：**显式指定本批源码清单**（`batch_manifest.py prepare` 的产物）。
+    # 2.30 修复（批次49 实录）：result 的 `source_manifest_sha256` 此前只从「位置契约清单」
+    # （`<讲稿名>.blocks.json` 的三个查找位）取——本批没有那个文件 → None，而 `sync_gate_result.py`
+    # 的校验拿 `--manifest`（**批次源码清单**）去比 → 永远不等 → ABORT。两个清单不是同一个东西，
+    # 名字却一样；现在把话说明白：显式给了 `--manifest` 就用它，并把它与位置契约清单分别记进结果。
+    manifest_arg = None
+    if "--manifest" in sys.argv:
+        manifest_arg = os.path.abspath(sys.argv[sys.argv.index("--manifest") + 1])
+        if not os.path.isfile(manifest_arg):
+            print("找不到源码清单（--manifest）：", manifest_arg)
+            return 2
     ROOT = os.path.abspath(root)
 
     if not os.path.isfile(lec):
@@ -2261,6 +2301,14 @@ def main():
     print("=" * 96)
     print("批次讲解闸门（§6.4 C 组）v%s:" % GATE_VERSION, os.path.basename(lec))
     print("源码根目录:", ROOT)
+    _hdr_loc = _manifest_path_for(lec)
+    _hdr_mp = manifest_arg or _hdr_loc
+    if not _hdr_mp:
+        _hdr_txt = ("**无**（位置契约清单 `<讲稿名>.blocks.json` 不在三个查找位；"
+                    "①p/②p/④p 走归属级报告档）")
+    else:
+        _hdr_txt = "%s（%s）" % (_hdr_mp, "`--manifest` 显式指定" if manifest_arg else "位置契约清单")
+    print("源码清单: %s" % _hdr_txt)
     if sha:
         print("源码快照: %s（%s）%s" % (sha, how, "" if snap_ok else "  ⚠️ 读取失败，退回只比当前树"))
     else:
@@ -3070,13 +3118,19 @@ def main():
 
         if _pyord or _man_blocks:
             if _man:
-                checks.append(LC.make_check("G-PY", LC.FAIL if py_bad else LC.PASS,
-                                            checked=_s_pos + _s_lnchk,
+                # 2.30 hotfix：manifest 在但块上无可核对对象（_s_pos+_s_lnchk==0）时，
+                # PASS(checked=0) 会被 make_check 拒绝（"0 对象 PASS 是真空通过"）→ 降级 NOT_CHECKED
+                _gpy_n = _s_pos + _s_lnchk
+                checks.append(LC.make_check("G-PY",
+                                            (LC.FAIL if py_bad else LC.PASS) if _gpy_n else LC.NOT_CHECKED,
+                                            checked=_gpy_n,
                                             findings=[LC.make_finding("非 Java 位置/行号不符", where=os.path.basename(lec),
                                                                       severity=LC.FAIL)] * (1 if py_bad else 0),
-                                            note="manifest 位置级：①p 核对 %d 处不符 %d ｜ ②p ★文件 %d 个不足 %d ｜ "
-                                                 "④p 可判定 %d 处漂移 %d"
-                                                 % (_s_pos, _s_pbad, len(_rev2s), len(_p2s), _s_lnchk, _s_lnbad)))
+                                            note=("manifest 位置级：①p 核对 %d 处不符 %d ｜ ②p ★文件 %d 个不足 %d ｜ "
+                                                  "④p 可判定 %d 处漂移 %d"
+                                                  % (_s_pos, _s_pbad, len(_rev2s), len(_p2s), _s_lnchk, _s_lnbad))
+                                            if _gpy_n else
+                                            "manifest 在但正文无非 Java 可核对对象（①p/④p 均 0 处）→ 未检查"))
             else:
                 checks.append(LC.make_check("G-PY", LC.REPORT, checked=_r_pbad + _r_lnbad + len(_rev2s),
                                             note="无 manifest → 归属级近似，只可见不判红（①p 不符 %d 处 / "
@@ -3093,10 +3147,12 @@ def main():
         checks.append(LC.make_check("G-LECTURE", LC.REPORT, checked=1,
                                     note="教材判定：%s —— %s" % ("是" if is_lec else "否", lec_why)))
 
+        _loc_mp = _hdr_loc                            # 位置契约清单（①p/②p/④p 的归属口径）
+        _mp = manifest_arg or _loc_mp                 # 显式 --manifest 优先（它就是 sync_gate_result 要核对的那份）
         result = LC.make_result("gate_lecture.py", checks,
                                 contract_version=GATE_VERSION,
                                 lecture_sha256=LC.sha256_file(lec),
-                                source_manifest_sha256=(LC.sha256_file(_mp) if (_mp := _manifest_path_for(lec)) else None),
+                                source_manifest_sha256=(LC.sha256_file(_mp) if _mp else None),
                                 source_root=ROOT,
                                 extra=dict(fidelity=fid, reverse=rev_rows, density=den, lineno=ln_rows,
                                            usage=dict(items=u_items, ext=u_ext),
@@ -3104,6 +3160,9 @@ def main():
                                            struct=dict(fails=sden["fails"], report=sden["report"],
                                                        stats=sden["stats"]),
                                            snapshot=sha, ver_marked=(ver_marker(lines)[2]),
+                                           manifest_source=("cli" if manifest_arg else
+                                                            ("location-contract" if _loc_mp else None)),
+                                           location_contract_manifest=(_loc_mp or None),
                                            pass_=ok, verdict=("PASS" if ok else "FAIL")))
         # `verdict` 与退出码同源（`pass_`），`pass` 由阻塞项得出——两者不一致时以退出码为准并在 note 里点明
         if result["pass"] != ok:
