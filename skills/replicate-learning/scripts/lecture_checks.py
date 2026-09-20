@@ -218,7 +218,13 @@ def render(result, verbose=True):
 
 def validate_result(result, *, expect_lecture_sha256=None, expect_manifest_sha256=None,
                     expect_contract_version=None, required_ids=None):
-    """盖章前的自检：结果必须与"现在要盖章的这份内容"对得上。返回错误列表（空 = 可盖章）。"""
+    """盖章前的自检：结果必须与"现在要盖章的这份内容"对得上。返回错误列表（空 = 可盖章）。
+
+    这里查的是**结果整体自洽**：不光看 `checks[]`，还要看顶层 `pass` / `pass_` / `verdict` 三个结论字段
+    与检查项是否一致。为什么必须有这条：只按 `checks[]` 判定时，一份 `pass=false`、`verdict=FAIL`
+    却把各项都写成 PASS 的（被篡改或拼错的）结果会**通过校验并被盖章**——"失败的门禁结果不得盖章"
+    是这条工具的存在理由，不能只依赖写结果的那一方守规矩。
+    """
     problems = []
     if result.get("schema_version") != SCHEMA_VERSION:
         problems.append("结果 schema_version=%r，本工具只认 %d"
@@ -246,6 +252,21 @@ def validate_result(result, *, expect_lecture_sha256=None, expect_manifest_sha25
             problems.append("检查 %s 的状态 %r 非法" % (c.get("id"), c.get("status")))
         if c.get("status") == PASS and not c.get("checked"):
             problems.append("检查 %s 写 PASS 但核验对象数为 0（真空通过）" % c.get("id"))
+
+    blocking = [c.get("id") for c in result.get("checks", []) if c.get("status") in BLOCKING]
+    # 顶层结论字段（三个都要看，缺一就可能放过"自述失败"的结果）
+    top_pass = result.get("pass")
+    if top_pass is False:
+        problems.append("结果顶层 pass=false（自述未通过）——不许盖章")
+    if "pass_" in result and result.get("pass_") is False:
+        problems.append("结果里 pass_=false（gate 结构化字段）——不许盖章")
+    verdict = result.get("verdict")
+    if verdict is not None and not str(verdict).strip().upper().startswith("PASS"):
+        problems.append("结果 verdict=%r 不是 PASS——不许盖章" % verdict)
+    if top_pass and blocking:
+        problems.append("结果 pass=true 却有阻塞项 %s（结论与检查项矛盾）" % "、".join(blocking))
+    if top_pass is False and not blocking:
+        problems.append("结果 pass=false 却没有任何 FAIL/ERROR 检查项（结论与检查项矛盾）")
     return problems
 
 

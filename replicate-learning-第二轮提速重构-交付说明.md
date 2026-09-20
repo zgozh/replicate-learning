@@ -38,6 +38,9 @@
 | `560ff0c` | feat(slots): 稳定源码槽位 + `batch_build` 可重复构建（§3.3） |
 | `c03baca` | feat(gate-json): 结构化单批门禁结果 + 从结果盖章（§3.4） |
 | `1a83bbc` | feat(publish): 一份批次记录更新全部派生视图（§3.5） |
+| `6c39f83` | docs: 文档同步与交付说明 + `gate_all` 崩溃缺陷修复 |
+| `8da47e4` | test(e2e): 端到端脚本化试运行 |
+| 见 §9 | fix(review): 审查发现的 4 处缺陷修复 + 回归测试 |
 
 ## 3. 判据回归：改造前后判定必须一字不变
 
@@ -60,31 +63,38 @@
 
 **合计 11/11 逐字不变**（另有 1 份因文件名写错被跳过，非判定差异）。同时新结果里没有任何「核验对象 0 却写 PASS」的检查项。
 
+补充（第二轮审查后）：`git diff c03baca -- …/gate_lecture.py` 为空——**判据实现自 §3.4 提交后再未改动**，
+故上述 11/11 结论对本轮修复依然成立（本轮只动 `lecture_checks/publish_batch/sync_gate_result` 与测试）。
+
 ## 4. 脚本化流水线实测（真实批次48 素材）
 
 素材 = 批次48 的 8 件真实 Java 源码 + 真实注释计划 + 5 份真实分片；输出写在临时目录，未改 ragent 任何教材。
+每一步都带**显式期望断言**（退出码 + 输出关键串，见下表"期望"列）：期望不符 → 脚本退出码 1 并列出不符项。
 
-| 步骤 | 阶段 | 实测 | 结论 |
-|---|---|---:|---|
-| 源文件清单校验 | prepare | 129 ms | 夹具根与清单 `source_root` 不同 → 报 FAIL（`batch_manifest` 的既有严格口径；预检按相对路径比 hash 并给出 `[WARN]`） |
-| 预检：**首轮**计划 | prepare | 239 ms | FAIL：★ 签名缺口 3（appendRow / sanitizeCell / appendSeparator）+ 密度连段 5（8/10/10/8/10） |
-| 预检：修复后计划 | repair | 293 ms | PASS（0 缺口） |
-| 脚手架：17 节 + 8 槽位 | prepare | 514 ms | 17 节、8 个槽位 ID（含源文件 sha256 前 8 位） |
-| 组装（真实分片）+ 注入 | inject | 207 ms | 8 块全部命中；分片是旧格式 → 走兼容 `anchor` 路径并告警 |
-| 重复构建 `--check` | inject | 186 ms | 与磁盘逐字节一致（幂等） |
-| 门禁（真实 156KB 教材） | gate | 2149 ms | PASS，16 条检查（PASS 14 / REPORT 1 / NOT_CHECKED 1） |
-| 门禁（重建产物） | gate | 594 ms | PASS（13/2/1） |
-| 门禁（项目副本，供盖章） | gate | 2361 ms | PASS |
-| 盖章 ⑯ + 复跑终检 | verify | 2099 ms | 盖章后复跑 PASS，最终哈希单独记录 |
-| 发布预览 / 发布 / 重复发布 | publish | 128 / 131 / 127 ms | 2 个视图更新；重复发布零变化 |
-| Python 侧预检 | prepare | 198 ms | PASS（P-PY = REPORT，核验 1 个对象） |
-| Python 文件过闸门 | gate | 171 ms | 12 条检查：0 PASS / 2 REPORT / 10 NOT_CHECKED（`.py` 不是教材 → **没有真空 PASS**） |
+| 步骤 | 阶段 | 实测 | 期望（脚本断言） | 结论 |
+|---|---|---:|---|---|
+| 清单 prepare（自建副本） | prepare | 268 ms | rc=0，`prepared 8 source files` | 通过 |
+| 清单 check（同根副本） | prepare | 149 ms | rc=0，`PASS: 8 source files match` | 通过 |
+| 清单 check（夹具清单，`source_root` 不同） | prepare | 143 ms | **rc=1**，`source root differs` | 已知夹具条件，**显式断言为预期失败**（不再静默返回 0） |
+| 预检：**首轮**计划 | prepare | 267 ms | **rc=1**，含 appendRow/sanitizeCell/appendSeparator 与"最长无中文注释连段" | ★ 签名缺口 3 + 密度连段 5（8/10/10/8/10） |
+| 预检：修复后计划 | repair | 259 ms | rc=0，`→ PASS` | 0 缺口 |
+| 脚手架：17 节 + 8 槽位 | prepare | 209 ms | rc=0，`节数 = 17`、`8 个源码槽位` | 通过 |
+| 组装（真实分片）+ 注入 | inject | 185 ms | rc=0，`注入 8 块`、`节数=17` | 8 块命中；旧格式分片走兼容 `anchor` 并告警 |
+| 重复构建 `--check` | inject | 182 ms | rc=0，`一致` | 逐字节幂等 |
+| 门禁（重建产物） | gate | 526 ms | rc=0，`总判定: PASS` | 通过 |
+| 门禁（真实 156KB 教材副本） | gate | 2639 ms | rc=0，`总判定: PASS` | 16 条检查（PASS 14 / REPORT 1 / NOT_CHECKED 1） |
+| 盖章 ⑯ + 复跑终检 | verify | 2190 ms | rc=0，`盖章后复跑闸门通过` | 最终哈希单独记录 |
+| 发布预览 / 发布 / 重复发布 | publish | 143 / 152 / 139 ms | rc=0，`未写盘` / `已更新 2 个文件` / `重复发布零变化` | 2 个视图；重复发布零变化 |
+| 同一文件两条更新（内容断言） | publish | — | 两条都在文件里 | 按文件分组、串行叠加 |
+| Python 侧预检 | prepare | 223 ms | rc=0，`→ PASS` | P-PY = REPORT（核验 1 个对象） |
+| Python 文件过闸门 | gate | 190 ms | rc=0，`NOT_CHECKED` | 0 PASS / 10 NOT_CHECKED（**没有真空 PASS**） |
 
-**合计脚本工具时间约 8.0 秒**（记录墙钟 8000 ms）。**模型写作（investigate/write）在本机无法采集**：
-`batch_trace` 报表把它们单列为"未记录阶段"，本次不编造数字。
+**合计 17 步，期望不符 0 项；脚本侧工具时间约 8 秒**（记录墙钟 8000 ms）。
+**这只是脚本侧基线，不是"一小时已缩短"的结论**：模型写作（investigate/write）无法由脚本采集，
+报表里单列为"未记录阶段"，本文件不预估降幅（见 §6）。
 
 对照：第48批会话导出里是 **105 次工具调用**（68 次 bash）、一次 Maven 约 **28 秒**、整批用户体感约 **一小时**。
-结论：**工具时间不是瓶颈**；能省的是"猜规则 → 试错 → 重注入 → 手写归档"这条模型侧回路。
+结论：**脚本工具时间不是瓶颈**；能省的是"猜规则 → 试错 → 重注入 → 手写归档"这条模型侧回路。
 
 ## 5. Java / Python 对照数据表
 
@@ -115,6 +125,7 @@
    改 ID 会让已有引用与历史记录对不上，故只在 `lecture_checks.CHECK_GROUPS` 里显式区分（`S22b`）并写明理由。
 4. **`batch_manifest.py check` 对夹具报 FAIL**：它严格比对清单里的绝对 `source_root`；夹具是拷贝，
    预检因此对 hash 用相对路径比对并输出 `[WARN]`。真实项目里 `--src` 与清单同根时不存在这个问题。
+   端到端脚本现在**两条都跑**：自建同根副本断言 `PASS`，夹具清单断言 `rc=1 + source root differs`（预期失败必须显式声明）。
 5. **`gate_all.py` 的一处崩溃缺陷已顺带修掉**：记录类文件声明判据版本 ≥2.21 时 `s_bad` 未定义 → `NameError` 崩掉整个记分卡
    （新增回归测试）。这属于工具缺陷修复，不改变任何判定结果。
 6. `test.md`（用户原始会话导出）**只读、未改动、未纳入提交**；其他安装副本（dsh-toolkit/Codex）**未同步**——等审查通过后再同步。
@@ -130,9 +141,9 @@
 cd skills/replicate-learning
 
 # 全量自检与单测
-python scripts/skill_selfcheck.py          # 期望：检查项 92，失败 0 → PASS
+python scripts/skill_selfcheck.py          # 期望：检查项 94，失败 0 → PASS
 python scripts/v2_selfcheck.py             # 期望：PASS (6 contract entries)
-python -m unittest discover -s scripts -p "test_*.py" -t scripts   # 期望：82 项 OK
+python -m unittest discover -s scripts -p "test_*.py" -t scripts   # 期望：90 项 OK
 
 # 预检：首轮计划必须报出 3 个 ★ 签名缺口 + 5 处密度连段；修复后计划必须 0 缺口
 python scripts/batch_preflight.py --src tests/fixtures/batch48/project \
@@ -182,3 +193,20 @@ python scripts/batch_trace.py --file <批次目录>/trace.jsonl report
 - **`sync_gate_result.py` 默认行为**：不给 `--result-json` 时仍是旧路径（自己跑闸门 + 解析文本），只多打印一行建议。
 - **`safe_edit.save(backup=True)`**：目标文件不存在时不再尝试读它（原来会 `FileNotFoundError`）。
 - **`gate_all.py`**：`s_bad` 初始化位置修正（崩溃缺陷），判定结果不变。
+
+## 9. 审查意见的处理（第二轮）
+
+第一轮审查（独立复跑单测/自检 + 定向构造用例）提出 4 项，逐条处理如下；**审查没有改动仓库文件**。
+
+| # | 审查意见 | 复现 | 修复 | 回归测试 |
+|---|---|---|---|---|
+| 1 | 同一文件的多条归档更新互相覆盖（`publish_batch.py`） | 两条更新同一个状态文件 → 只留第二条 | `plan_updates` 改为**按文件分组、串行叠加**（维护"当前文本"，最后每个文件只落一次盘；差异按"原文 → 最终"整体展示） | `test_two_updates_on_the_same_file_both_land`、`test_three_updates_on_the_same_file_are_sequential`、`test_same_file_conflict_in_the_second_update_leaves_the_file_untouched`；`skill_selfcheck` ㉔ 组新增同文件双更新断言 |
+| 2 | 失败的门禁结果可能通过盖章前校验（`lecture_checks.py`） | 构造 `pass=false / verdict=FAIL` 而各项 PASS 的结果 → 校验返回空错误列表 | `validate_result` 增查**顶层 `pass` / `pass_` / `verdict`** 三个结论字段，并做交叉一致性（`pass=true` 有阻塞项、`pass=false` 无阻塞项都拒绝） | `test_self_reported_failure_cannot_be_stamped`、`test_rendered_top_level_confusing_pass_flags`、`test_result_with_contradictory_conclusion_is_refused`；`skill_selfcheck` ㉓ 组新增"顶层自述失败 → 拒绝" |
+| 3 | 盖章后复检失败不会自动还原讲义（`sync_gate_result.py`） | 盖章 → 复检 FAIL → 只打印"请手动回滚" | 盖章前留存原稿字节；复检失败 → **自动回滚**并把 `rolled_back=true` 写进最终记录，工具退出码 1。此外最终复检判定改为**退出码为 0 且 `pass=true`**（两者都要） | `test_rolls_back_when_post_stamp_verification_fails`（真实场景：结果自洽但正文过不了闸门）、`test_final_verification_requires_zero_exit_code`（模拟"闸门崩了但旧结果文件还在"） |
+| 4 | 验收脚本自相矛盾（`tests/e2e_scripted_run.py`） | 清单校验 rc=1，脚本整体仍返回 0 | 每步**显式声明期望**（退出码 + 输出关键串），不符即退出码 1 并列明；清单校验改为两条（自建同根副本断言 PASS；夹具清单断言 rc=1 + `source root differs`）；新增同文件双更新内容断言；报表与终端都写明"只覆盖脚本化步骤，不构成真实批次总时长结论" | 脚本自身：**17 步，期望不符 0 项**（见 §4） |
+
+判据回归不受影响：本轮只动 `lecture_checks.py` / `publish_batch.py` / `sync_gate_result.py` 与其测试，
+**`gate_lecture.py` 未改**，故 §3 的 11/11 逐字不变结论继续成立。
+
+验证（修复后复跑）：`skill_selfcheck` **94 项 0 失败**（㉓㉔ 各新增一条断言）、单测 **90 项 OK**、`v2_selfcheck` PASS、
+端到端脚本化试运行 17 步期望全中。

@@ -1182,6 +1182,21 @@ def check_structured_result(r):
             r.ok('盖章前置校验：结果缺少必需检查项 → 拒绝')
         else:
             r.fail('缺少必需检查项却未报错：%s' % miss)
+
+        # 顶层结论字段必须参与校验：只按 checks[] 判会放过"自述失败却被各项写成 PASS"的结果
+        forged = json.loads(json.dumps(data, ensure_ascii=False))
+        for c in forged['checks']:
+            c['status'] = LC.PASS
+            c['checked'] = c.get('checked') or 1
+        forged['pass'] = False
+        forged['pass_'] = False
+        forged['verdict'] = '总判定: FAIL'
+        bad = LC.validate_result(forged, expect_lecture_sha256=data['lecture_sha256'],
+                                expect_contract_version=G.GATE_VERSION)
+        if any('pass' in x for x in bad) and any('verdict' in x for x in bad):
+            r.ok('盖章前置校验：顶层 pass/pass_/verdict 自述失败 → 拒绝（不被各项 PASS 骗过）')
+        else:
+            r.fail('顶层结论字段未参与盖章校验（失败结果可能被盖章）：%s' % bad)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -1264,6 +1279,23 @@ def check_publish(r):
             r.ok('发布器：讲义哈希不符 → 拒绝发布且原文件不动')
         else:
             r.fail('发布器未拒绝哈希不符的记录')
+
+        # 同一文件的多条更新必须**串行叠加**（原实现每条都从磁盘原文起算 → 只留最后一条）
+        multi = record([
+            {"file": "NOTES/状态.md", "op": "ensure_line", "idempotent_key": "批次48 已完成",
+             "text": "- 批次48 已完成"},
+            {"file": "NOTES/状态.md", "op": "replace_anchor", "anchor": "下一批：阶段3批次49",
+             "expect": "阶段3批次49", "idempotent_key": "下一批：阶段3批次50",
+             "text": "下一批：阶段3批次50"},
+        ])
+        if run(multi) == 0:
+            text = io.open(os.path.join(root, 'NOTES', '状态.md'), encoding='utf-8').read()
+            if '- 批次48 已完成' in text and '下一批：阶段3批次50' in text:
+                r.ok('发布器：同一文件的两条更新都落盘（按文件分组、串行叠加）')
+            else:
+                r.fail('发布器：同一文件的多条更新互相覆盖了 → %r' % text[-80:])
+        else:
+            r.fail('发布器：同一文件的多条更新执行失败')
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

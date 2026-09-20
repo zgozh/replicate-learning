@@ -105,6 +105,59 @@ class PublishTests(unittest.TestCase):
         self.assertEqual(self.run_publish(), 0)
         self.assertEqual(self.snapshot(), before)
 
+    def test_two_updates_on_the_same_file_both_land(self):
+        """审查发现：同一文件的多条更新会互相覆盖（每条都从磁盘原文起算）。
+
+        真实形态：同一个状态文件既要补一行"本批已完成"，又要改"下一批"指针。
+        """
+        rec = make_record(self.root, self.lec, self.final)
+        rec["targets"] = [
+            {"file": "NOTES/复刻状态-下一步.md", "op": "ensure_line",
+             "idempotent_key": "阶段3批次48 已完成", "text": "- 阶段3批次48 已完成"},
+            {"file": "NOTES/复刻状态-下一步.md", "op": "replace_anchor",
+             "anchor": "下一批：阶段3批次48", "expect": "阶段3批次48",
+             "idempotent_key": "下一批：阶段3批次49", "text": "下一批：阶段3批次49"},
+        ]
+        self.write_record(rec)
+        self.assertEqual(self.run_publish(["--apply"]), 0)
+        text = (self.root / "NOTES/复刻状态-下一步.md").read_text(encoding="utf-8")
+        self.assertIn("- 阶段3批次48 已完成", text, "第一条更新被第二条覆盖了")
+        self.assertIn("下一批：阶段3批次49", text)
+        self.assertNotIn("下一批：阶段3批次48", text)
+
+    def test_three_updates_on_the_same_file_are_sequential(self):
+        rec = make_record(self.root, self.lec, self.final)
+        rec["targets"] = [
+            {"file": "NOTES/阶段3-切分方案.md", "op": "ensure_line",
+             "idempotent_key": "A", "text": "- A 第一条"},
+            {"file": "NOTES/阶段3-切分方案.md", "op": "ensure_line",
+             "idempotent_key": "B", "text": "- B 第二条"},
+            {"file": "NOTES/阶段3-切分方案.md", "op": "append_section",
+             "idempotent_key": "C", "text": "- C 第三条"},
+        ]
+        self.write_record(rec)
+        self.assertEqual(self.run_publish(["--apply"]), 0)
+        text = (self.root / "NOTES/阶段3-切分方案.md").read_text(encoding="utf-8")
+        for token in ("- A 第一条", "- B 第二条", "- C 第三条"):
+            self.assertIn(token, text)
+        # 重复发布仍然零变化（分组后的幂等性）
+        after = text
+        self.assertEqual(self.run_publish(["--apply"]), 0)
+        self.assertEqual((self.root / "NOTES/阶段3-切分方案.md").read_text(encoding="utf-8"), after)
+
+    def test_same_file_conflict_in_the_second_update_leaves_the_file_untouched(self):
+        rec = make_record(self.root, self.lec, self.final)
+        rec["targets"] = [
+            {"file": "NOTES/复刻状态-下一步.md", "op": "ensure_line",
+             "idempotent_key": "阶段3批次48 已完成", "text": "- 阶段3批次48 已完成"},
+            {"file": "NOTES/复刻状态-下一步.md", "op": "replace_anchor",
+             "anchor": "不存在的锚点", "text": "下一批：阶段3批次49"},
+        ]
+        self.write_record(rec)
+        before = self.snapshot()
+        self.assertEqual(self.run_publish(["--apply"]), 1)
+        self.assertEqual(self.snapshot(), before, "同一文件的第二条冲突时，第一条也不许落盘")
+
     def test_apply_updates_every_view_once(self):
         self.assertEqual(self.run_publish(["--apply"]), 0)
         matrix = (self.root / "NOTES/项目文件覆盖矩阵.md").read_text(encoding="utf-8")

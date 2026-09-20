@@ -175,23 +175,36 @@ def apply_target(text, t):
 
 
 def plan_updates(rec, root, targets):
-    """只读地算出每个文件的新内容与差异；任何不满足都抛 Conflict（此时一个字节都没写）。"""
-    plan = []
+    """只读地算出**每个文件**的新内容与差异；任何不满足都抛 Conflict（此时一个字节都没写）。
+
+    关键：**按文件分组、串行叠加**。同一份文件常有多条更新（例如同一个状态文件既要补一行、
+    又要改"下一批"指针）。原实现每条更新都从**磁盘原文**起算，后写的那条会把前一条的结果覆盖掉——
+    实测两条更新同一文件时只剩最后一条。现在维护"当前文本"，每条在前一条的结果上应用，
+    最后每个文件只落一次盘（差异也按"原文 → 最终"整体展示）。
+    """
+    order, state, plans = [], {}, {}
     for t in targets:
         path = inside(root, t['file'])
-        if os.path.isfile(path):
-            before = io.open(path, encoding='utf-8').read()
-            is_new = False
-        else:
-            if t['op'] != 'append_section':
-                raise Conflict('目标文件不存在，而 op=%s 无法建文件：%s' % (t['op'], t['file']))
-            before, is_new = '', True
-        after, changed, why = apply_target(before, t)
-        if is_new and changed:
+        if path not in state:
+            exists = os.path.isfile(path)
+            state[path] = io.open(path, encoding='utf-8').read() if exists else ''
+            plans[path] = dict(path=path, before=state[path], after=state[path], changed=False,
+                               why=[], is_new=not exists)
+            order.append(path)
+        item = plans[path]
+        if item['is_new'] and t['op'] != 'append_section':
+            raise Conflict('目标文件不存在，而 op=%s 无法建文件：%s' % (t['op'], t['file']))
+        try:
+            after, changed, why = apply_target(state[path], t)
+        except Conflict as exc:
+            raise Conflict('%s → %s' % (t['file'], exc))
+        state[path] = after
+        item['after'] = after
+        item['changed'] = item['changed'] or changed
+        if item['is_new'] and changed:
             why = '新建文件：' + why
-        plan.append(dict(target=t, path=path, before=before, after=after,
-                         changed=changed, why=why))
-    return plan
+        item['why'].append(why)
+    return [plans[p] for p in order]
 
 
 def render_plan(plan, root):
@@ -199,7 +212,8 @@ def render_plan(plan, root):
     for item in plan:
         rel = os.path.relpath(item['path'], root)
         tag = 'CHANGE' if item['changed'] else 'SKIP  '
-        lines.append('[%s] %s（%s）' % (tag, rel, item['why']))
+        why = '；'.join(item['why']) if isinstance(item['why'], list) else item['why']
+        lines.append('[%s] %s（%s）' % (tag, rel, why))
         if not item['changed']:
             continue
         diff = list(difflib.unified_diff(item['before'].split('\n'), item['after'].split('\n'),
@@ -247,9 +261,13 @@ def write_all(plan, root, apply=True):
 
 
 def git_add(root, files, lecture):
-    """只 stage 明确列出的文件（禁止 `git add -A`）。返回 (是否执行, 说明)。"""
+    """只 stage 明确列出的文件（禁止 `git add -A`）。返回 (是否执行, 说明)。
+
+    子进程一律显式 `encoding='utf-8', errors='replace'`：默认会用系统代码页（GBK）解码 git 输出，
+    而仓库路径里有中文时 `diff --cached` 之类会直接让读取线程抛 `UnicodeDecodeError`。
+    """
     repo = subprocess.run(['git', '-C', root, 'rev-parse', '--show-toplevel'],
-                          capture_output=True, text=True)
+                          capture_output=True, text=True, encoding='utf-8', errors='replace')
     if repo.returncode != 0:
         return False, '项目根不是 git 仓库（跳过 git add）'
     top = repo.stdout.strip()
@@ -259,7 +277,8 @@ def git_add(root, files, lecture):
         if rel not in rels:
             rels.append(rel)
     # 嵌套仓库：只 add 属于该仓库的文件（`git -C <top> add -- <rel>` 本身就不会跨界）
-    p = subprocess.run(['git', '-C', top, 'add', '--'] + rels, capture_output=True, text=True)
+    p = subprocess.run(['git', '-C', top, 'add', '--'] + rels, capture_output=True, text=True,
+                       encoding='utf-8', errors='replace')
     if p.returncode != 0:
         return False, 'git add 失败：%s' % (p.stderr or '').strip()[:200]
     return True, '已 stage %d 个文件（仅本批记录内的文件，未使用 git add -A）' % len(rels)

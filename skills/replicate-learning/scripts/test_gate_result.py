@@ -132,6 +132,63 @@ class ResultStampingTests(unittest.TestCase):
         self.write_result(result)
         self.assertEqual(self.run_sync(["--apply"]), 1)
 
+    def test_self_reported_failure_cannot_be_stamped(self):
+        """审查发现：只按 checks[] 判定时，pass=false/verdict=FAIL 但各项写 PASS 的结果会被盖章。"""
+        result = good_result(LC.sha256_file(self.doc))
+        result["pass"] = False
+        result["pass_"] = False
+        result["verdict"] = "总判定: FAIL ❌"
+        self.write_result(result)
+        before = self.doc.read_text(encoding="utf-8")
+        self.assertEqual(self.run_sync(["--apply"]), 1)
+        self.assertEqual(self.doc.read_text(encoding="utf-8"), before)
+        problems = LC.validate_result(result, expect_lecture_sha256=LC.sha256_file(self.doc))
+        blob = " ".join(problems)
+        self.assertIn("顶层 pass=false", blob)
+        self.assertIn("pass_=false", blob)
+        self.assertIn("verdict=", blob)
+
+    def test_rendered_top_level_confusing_pass_flags(self):
+        result = good_result(LC.sha256_file(self.doc))
+        result["pass_"] = False          # gate 的 pass_ 字段单独指向失败
+        self.write_result(result)
+        self.assertEqual(self.run_sync(["--apply"]), 1)
+
+    def test_result_with_contradictory_conclusion_is_refused(self):
+        result = good_result(LC.sha256_file(self.doc))
+        result["checks"].append(LC.make_check("G-SIG", LC.FAIL, checked=1))
+        result["pass"] = True            # 有阻塞项却自称通过
+        self.write_result(result)
+        self.assertEqual(self.run_sync(["--apply"]), 1)
+        self.assertTrue(any("结论与检查项矛盾" in p
+                            for p in LC.validate_result(result)))
+
+    def test_rolls_back_when_post_stamp_verification_fails(self):
+        """盖章后复检失败必须**自动还原讲义**（审查发现的第三处缺陷）。
+
+        这里构造一个真实场景：结果本身自洽（各项 PASS、pass=true、哈希与当前正文一致）而被盖章，
+        但这份正文其实过不了闸门（声明了判据版本却缺 ⓪e/⓪f 要求的形态）——
+        盖章后复跑必然 FAIL，讲义必须回到盖章前的字节。
+        """
+        bad = ("# 阶段测试批\n\n> 判据版本：v2.30\n\n"
+               "## ⑯ 教材质量自检\n\n**判据版本：v2.30**（本批按此版判据验收）。\n\n## 索引节\n\n尾注。\n")
+        self.doc.write_text(bad, encoding="utf-8")
+        self.write_result(good_result(LC.sha256_file(self.doc)))
+        before = self.doc.read_bytes()
+        argv = sys.argv
+        sys.argv = ["sync_gate_result.py", str(self.doc), "--src", str(self.root),
+                    "--result-json", str(self.result_path), "--apply",
+                    "--final-json", str(self.root / "final.json")]
+        try:
+            rc = S.main()
+        finally:
+            sys.argv = argv
+        self.assertEqual(rc, 1, "盖章后复检失败必须返回非 0")
+        self.assertEqual(self.doc.read_bytes(), before, "失败时必须自动回滚讲义")
+        rec = json.loads((self.root / "final.json").read_text(encoding="utf-8"))
+        self.assertFalse(rec["stamp_did_not_break_anything"])
+        self.assertTrue(rec["rolled_back"])
+
 
 class RenderTests(unittest.TestCase):
     def test_zero_object_checks_read_as_not_checked(self):
@@ -170,14 +227,43 @@ class FinalVerificationTests(unittest.TestCase):
             stamped = doc.read_text(encoding="utf-8") + "\n**七组闸门实测**（盖章测试）**：\n"
             doc.write_text(stamped, encoding="utf-8")
             final_json = root / "final.json"
-            rc = S.verify_final(str(doc), str(root), str(final_json), result)
-            self.assertEqual(rc, 0)
-            rec = json.loads(final_json.read_text(encoding="utf-8"))
+            code, rec = S.verify_final(str(doc), str(root), str(final_json), result)
+            self.assertEqual(code, 0, rec)
+            S.write_final_record(str(final_json), rec)
             self.assertEqual(rec["before_lecture_sha256"], result["lecture_sha256"])
             self.assertEqual(rec["final_lecture_sha256"], LC.sha256_file(doc))
             self.assertNotEqual(rec["before_lecture_sha256"], rec["final_lecture_sha256"])
             self.assertTrue(rec["pass"])
+            self.assertEqual(rec["exit_code"], 0)
             self.assertTrue(rec["stamp_did_not_break_anything"])
+
+    def test_final_verification_requires_zero_exit_code(self):
+        """只看结构化 pass 会漏掉"检查器崩了但结果文件是旧的"：退出码非 0 一律算没通过。"""
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            doc = root / "plain.md"
+            doc.write_text("# 普通文档\n\n正文。\n", encoding="utf-8")
+            jout = str(doc) + ".gate-final.json"
+
+            class FakeProc:
+                returncode = 1
+                stdout = "总判定: PASS ✅\n"
+                stderr = "boom\n"
+
+            def fake_run(cmd, **kwargs):
+                # 模拟"闸门崩了但上一个结果文件还在"：结果自述 pass=true，进程退出码却是 1
+                Path(jout).write_text(json.dumps({"pass": True, "contract_version": "2.30",
+                                                  "checks": []}), encoding="utf-8")
+                return FakeProc()
+
+            with mock.patch.object(S.subprocess, "run", fake_run):
+                code, rec = S.verify_final(str(doc), str(root), None,
+                                           {"lecture_sha256": "a" * 64})
+            self.assertNotEqual(code, 0, rec)
+            self.assertFalse(rec["stamp_did_not_break_anything"])
+            self.assertEqual(rec["exit_code"], 1)
+            self.assertFalse(os.path.exists(jout), "复检用的临时结果文件必须清掉")
 
 
 class GateAllRecordFileTests(unittest.TestCase):

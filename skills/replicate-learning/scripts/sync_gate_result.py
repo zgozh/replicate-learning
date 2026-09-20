@@ -199,7 +199,11 @@ def write_block(lecture, block, ver, apply):
 
 
 def verify_final(lecture, src, final_json, result):
-    """盖章后**再跑一次完整闸门**校验最终成品，并把最终哈希写进独立记录。"""
+    """盖章后**再跑一次完整闸门**校验最终成品，并把最终哈希写进独立记录。
+
+    判定 = **进程退出码为 0** 且结构化结果 `pass=true`（两者都要）：只看 `pass` 会漏掉
+    "检查器崩了但结果文件是旧的/空的"这类情况；只看退出码则丢掉了对象数等信息。
+    """
     jout = lecture + '.gate-final.json'
     p = subprocess.run([sys.executable, os.path.join(HERE, 'gate_lecture.py'), lecture,
                         '--src', src, '--json', jout],
@@ -212,6 +216,7 @@ def verify_final(lecture, src, final_json, result):
     for line in (p.stdout or '').split('\n'):
         if line.startswith('总判定:'):
             verdict = line.strip()
+    ok = bool(final and final.get('pass')) and p.returncode == 0
     rec = {
         'schema_version': LC.SCHEMA_VERSION,
         'stamped_at': datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='seconds'),
@@ -223,18 +228,30 @@ def verify_final(lecture, src, final_json, result):
         'pass': (final or {}).get('pass'),
         'checks': [{'id': c['id'], 'status': c['status'], 'checked': c['checked']}
                    for c in (final or {}).get('checks', [])],
-        'stamp_did_not_break_anything': bool(final and final.get('pass')),
+        'stamp_did_not_break_anything': ok,
+        'rolled_back': False,
     }
-    if final_json:
-        io.open(final_json, 'w', encoding='utf-8', newline='').write(
-            json.dumps(rec, ensure_ascii=False, indent=1) + '\n')
-        print('→ 最终成品校验记录已写 %s（final sha256=%s）'
-              % (final_json, (rec['final_lecture_sha256'] or '')[:16]))
-    if not rec['stamp_did_not_break_anything']:
-        print('[FAIL] 盖章后复跑闸门未通过（退出码 %s）——盖章动作本身破坏了成品，请回滚 .bak' % p.returncode)
-        return 1
-    print('[OK ] 盖章后复跑闸门通过（退出码 0），最终哈希已记录')
-    return 0
+    if not ok:
+        print('[FAIL] 盖章后复跑闸门未通过（退出码 %s，pass=%s）——准备回滚讲义' % (p.returncode, rec['pass']))
+    return (1 if not ok else 0), rec
+
+
+def write_final_record(final_json, rec):
+    if not final_json:
+        return
+    io.open(final_json, 'w', encoding='utf-8', newline='').write(
+        json.dumps(rec, ensure_ascii=False, indent=1) + '\n')
+    print('→ 最终成品校验记录已写 %s（final sha256=%s）'
+          % (final_json, (rec.get('final_lecture_sha256') or '')[:16]))
+
+
+def restore(lecture, data):
+    """把讲义恢复成盖章前的内容（tmp → os.replace），用于"盖章后复检失败"的回滚。"""
+    tmp = lecture + '.rollback'
+    io.open(tmp, 'wb').write(data)
+    os.replace(tmp, lecture)
+    print('   ↳ 已把讲义恢复为盖章前的字节（sha256=%s…）'
+          % (LC.sha256_file(lecture) or '')[:12])
 
 
 def main():
@@ -287,10 +304,25 @@ def main():
         r = run_gate(lec, src)
         block, ver = render(lec, r), r['ver']
 
+    # 盖章前先把原稿字节留一份：盖章后复检失败要能**自动还原**（"失败不动原稿"是承诺，不是提醒）
+    original = io.open(lec, 'rb').read()
     rc = write_block(lec, block, ver, a.apply)
-    if rc or not a.apply or not a.verify_final:
+    if rc or not a.apply:
         return rc
-    return verify_final(lec, src, final_json, result if a.result_json else None)
+    if not a.verify_final:
+        return rc
+    code, rec = verify_final(lec, src, final_json, result if a.result_json else None)
+    if code:
+        rec['rolled_back'] = True
+        restore(lec, original)
+        rec['final_lecture_sha256'] = LC.sha256_file(lec)
+        write_final_record(final_json, rec)
+        print('[FAIL] 盖章后复检未通过 → **已自动回滚讲义**（工具退出码 1）；'
+              '修好门禁问题后重新生成结果再盖章。')
+        return 1
+    write_final_record(final_json, rec)
+    print('[OK ] 盖章后复跑闸门通过（退出码 0），最终哈希已记录')
+    return 0
 
 
 if __name__ == '__main__':
