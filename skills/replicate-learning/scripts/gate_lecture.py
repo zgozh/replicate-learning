@@ -68,7 +68,12 @@ import tarfile
 import subprocess
 import collections
 
-GATE_VERSION = "2.31"    # 2.31：⑨ 由「No-Framework 等价实现」改为**八股讲解**（用户第五轮要求：
+GATE_VERSION = "2.31"    # 2.31 补遗（2026-09-21 · 用户复核近三批 vs 批次7）：E14（**报告档**，不参与版本门）——
+                         #       ⑥ 件末段内容密度：E14a【怎么用】须含调用现场实测（"调用点"清单 + 类:行号 / :Lnn，
+                         #       用 callsite.py 实测，禁止凭印象）；E14b【边界与副作用】≥3 条实质推演（每条 =
+                         #       "误用动作 + 后果"且 ≥40 字）。血证 = 批次58/59/60 实测：边界均值 214-386 字
+                         #       vs 批次7 526 字；怎么用 360-423 字 vs 批次7 934 字（无调用点清单）。
+                         # 2.31：⑨ 由「No-Framework 等价实现」改为**八股讲解**（用户第五轮要求：
                          #       "No-Framework 我用不上，换成八股——读讲解时顺手把面试考点也学了"）。
                          #       机械判定 = 条数（≥6，每件至少 1）/ 四段字段（考点·定义·为什么考·本批落点）/
                          #       回链本批代码 / 「本批八股速查表」四项（G-KNOW）；内容好坏仍由 ⑯ + 人工审读。
@@ -1856,6 +1861,43 @@ def check_structure_density(txt):
     if st["snip"] < 3:
         report.append("③ 教学片段「可照抄的最小调用」仅 %d 处（<3）——批次31-38 实录：教学片段整体消失"
                       "（批次1/2/3=9-14 处、批次30=17 处）" % st["snip"])
+
+    # E14 ⑥ 件末段密度（2.31 补遗 · 报告档）：E14a 调用现场实测 / E14b 边界误用推演
+    item_lines = txt.split("\n")
+    idx6 = [i for i, l in enumerate(item_lines) if ITEM_RE.match(l)]
+    e14_use, e14_edge = [], []
+    for k, i in enumerate(idx6):
+        end = idx6[k + 1] if k + 1 < len(idx6) else len(item_lines)
+        body = item_lines[i:end]
+        at = ITEM_RE.match(body[0]).group(2)
+        blob = "\n".join(body)
+        m_use = re.search(r"^(?:\*\*)?【怎么用】(?:\*\*)?", blob, re.M)
+        if m_use:
+            tail = blob[m_use.end():]
+            m_end = re.search(r"\n[ \t]*\n[ \t]*(?:\*\*)?【(?:上下游|怎么接|讲解)】(?:\*\*)?"
+                              r"|^#{3,6}\s*6\.\d", tail, re.M)
+            use_seg = tail[: m_end.start()] if m_end else tail
+            if not (("调用点" in use_seg)
+                    and (re.search(r"[.]java:[0-9]+", use_seg) or re.search(r":L[0-9]+", use_seg))):
+                e14_use.append(at)
+        m_edge = re.search(r"^\*\*边界与副作用\*\*[：:]?", blob, re.M)
+        if m_edge:
+            tail = blob[m_edge.end():]
+            m_end = re.search(r"\n[ \t]*(?:\*\*)?【怎么用】", tail)
+            edge_seg = tail[: m_end.start()] if m_end else tail
+            bullets = [re.sub(r"^\*\*[^*]+\*\*[：:]?", "", re.sub(r"^\s*[-*]\s*", "", l)).strip()
+                       for l in edge_seg.split("\n") if re.match(r"\s*[-*]\s", l)]
+            solid = [b for b in bullets if len(b) >= 40]
+            if len(solid) < 3:
+                e14_edge.append(at)
+    st["e14_use"], st["e14_edge"] = len(e14_use), len(e14_edge)
+    if e14_use:
+        report.append("E14a ⑥ %d 件【怎么用】缺调用现场实测（应含「调用点」清单：谁在哪个类哪一行调它，"
+                      "用 scripts/callsite.py 实测，禁止凭印象）：%s"
+                      % (len(e14_use), "、".join(e14_use[:8])))
+    if e14_edge:
+        report.append("E14b ⑥ %d 件【边界与副作用】不足 3 条实质推演（每条应为「误用动作 + 后果」且 ≥40 字，"
+                      "参照批次7 的写法）：%s" % (len(e14_edge), "、".join(e14_edge[:8])))
 
     # E7 ④ 深潜小标题（报告档）
     if s4 is not None:
