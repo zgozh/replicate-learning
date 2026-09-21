@@ -4,7 +4,7 @@
 > 默认交付**第一册项目源码与工程实现**；第二、三册需用户明确提出。每条源码结论都保留可复检的证据。
 
 [![判据版本](https://img.shields.io/badge/判据-v2.31-blue)](skills/replicate-learning/references/第一册质量细则.md)
-[![自检](https://img.shields.io/badge/selfcheck-113%20项%200%20失败-brightgreen)](skills/replicate-learning/scripts/skill_selfcheck.py)
+[![自检](https://img.shields.io/badge/selfcheck-122%20项%200%20失败-brightgreen)](skills/replicate-learning/scripts/skill_selfcheck.py)
 [![License](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE)
 
 ---
@@ -62,7 +62,7 @@
 | 规则改了没人知道 | 判据有**版本号**（当前 v2.31）+ **变更登记表** + **回归集比对**，改动必须走三件套 |
 
 设计上有一条主线：**判据只在它能识别的形态上生效，于是"改变形态就能绕过它"是最大的漏洞**。
-`spec/血证档案.md` 里的 H1~H28 就是这条主线上踩过的 28 次真实事故——每条判据背后都钉着一次"当时为什么会漏"。
+`spec/血证档案.md` 里的 H1~H29 就是这条主线上踩过的 29 次真实事故——每条判据背后都钉着一次"当时为什么会漏"。
 
 ---
 
@@ -87,11 +87,11 @@ cp -r skills/replicate-learning ~/.agents/skills/
 
 ```bash
 cd ~/.workbuddy/skills/replicate-learning     # 换成你的实际安装路径
-python scripts/skill_selfcheck.py             # 期望：检查项 113，失败 0 → PASS ✅
+python scripts/skill_selfcheck.py             # 期望：检查项 122，失败 0 → PASS ✅
 python scripts/v2_selfcheck.py                # 期望：V2 self-check: PASS (6 contract entries)
 ```
 
-> 单元测试（可选，11 个 `test_*.py` 共 143 项）：
+> 单元测试（可选，12 个 `test_*.py` 共 165 项）：
 > `python -m unittest discover -s scripts -p "test_*.py" -t scripts`
 >
 > Windows 提示：若把工具输出重定向到文件却看到 `UnicodeEncodeError`，说明用的是旧版本脚本——
@@ -143,7 +143,7 @@ batch_trace start                       计时开批（分步耗时：准备/写
 → batch_build                           骨架 + 分片 + 注释计划 → 重建终稿（四种"假重建"配置直接拒绝）
 → gate_lecture --json --manifest        结构化结果（规则 ID / 状态 / 核验对象数 / 哈希）
 → sync_gate_result --result-json --apply 验哈希后盖章 ⑯，盖章后复跑并记录最终哈希
-→ publish_batch --record                一份批次记录更新覆盖矩阵/总索引/阶段页/状态（冲突零写入）
+→ publish_batch --record                一份批次记录更新覆盖矩阵/总索引/阶段页/状态（冲突零写入）；已发布行回修走同一工具的 update_line op
 ```
 
 第一次做全库扫描与四份基础地图；每批只读本批源码、调用方与相关测试。普通批次无需重读全部黄金样例
@@ -301,9 +301,9 @@ python scripts/batch_preflight.py --src <源码根> --plan <注释计划.json> [
 | 层 | 文件 | 作用 |
 |---|---|---|
 | **单一真源** | `spec/00-质量契约.json` | 每条要求 = id / 层级 / 判据原文 / gate 锚点 / SKILL 锚点 / 模板锚点 / 血证编号 |
-| **血证档案** | `spec/血证档案.md` | H1~H28：每条规则背后的真实事故。**想放宽判据前必读** |
+| **血证档案** | `spec/血证档案.md` | H1~H29：每条规则背后的真实事故。**想放宽判据前必读** |
 | **判据版本** | `references/第一册质量细则.md` §6.6 | 当前 **v2.31**；任何判据变更必须走三件套 |
-| **技能自检** | `scripts/skill_selfcheck.py` | 113 项，对账 SSOT ↔ 质量细则 ↔ 模板 ↔ gate，防规则丢失 |
+| **技能自检** | `scripts/skill_selfcheck.py` | 122 项，对账 SSOT ↔ 质量细则 ↔ 模板 ↔ gate，防规则丢失 |
 
 **判据变更三件套**（缺一即视为未完成）：
 
@@ -322,13 +322,13 @@ python scripts/batch_preflight.py --src <源码根> --plan <注释计划.json> [
 |---|---|
 | `gate_lecture.py` | 闸门：一次跑完七项判定，输出判据版本与缺口；`--json` 出**结构化结果**（稳定规则 ID / 状态 / 核验对象数 / 哈希）；`--manifest` 显式指定本批源码清单（供盖章核对） |
 | `gate_all.py` | 全库记分卡 + 判据回归比对（`--baseline` 逐字段比对，变化即 FAIL） |
-| `skill_selfcheck.py` | 技能文档一致性自检（SSOT ↔ 质量细则 ↔ 模板 ↔ gate 对账，113 项） |
+| `skill_selfcheck.py` | 技能文档一致性自检（SSOT ↔ 质量细则 ↔ 模板 ↔ gate 对账，122 项） |
 | `v2_selfcheck.py` | V2 入口与产物契约检查 |
 | `batch_trace.py` | 批次分步计时器（JSONL）：把"一小时到底花在哪"拆成准备/写作/注入/修复/终检/验证/归档 |
 | `batch_preflight.py` | **开批预检**：注入前就用闸门同口径报出 ★ 签名缺口、密度连段与可补注行、坏注释键；并要求清单**覆盖注释计划里的全部源文件**（缺件 FAIL） |
 | `new_batch.py` | 新批次脚手架：从模板生成 17 节**骨架**（`--skeleton`，与终稿 `--out` 分开）；`--plan` 时逐件写**稳定源码槽位**并派生唯一一份可编辑 `annotations.json` 与 `batch.json` |
 | `batch_build.py` | 从「骨架 + 分片 + 注释计划」**重建终稿**（`--dry-run` 预览、`--check` 比对、失败不写盘）；构建前 fail-closed 拦住骨架=终稿 / annotations 指回原始计划 / 分片目录为空 / 某节仍是模板占位原文（缺分片） |
-| `publish_batch.py` | 用**一份批次记录**更新覆盖矩阵/总索引/阶段页/状态：先验后写、冲突零写入、幂等、`--git-add` 只加点名文件 |
+| `publish_batch.py` | 用**一份批次记录**更新覆盖矩阵/总索引/阶段页/状态：先验后写、冲突零写入、幂等、`--git-add` 只加点名文件；已发布**行**的回修走第五种 op `update_line`（anchor 回修后仍唯一命中 + expect 整行原文 + 按行现状判幂等） |
 | `study_scope.py` | 默认第一册与显式扩展册范围解析、旧状态迁移 |
 | `batch_manifest.py` | 本批 Java/Python 等源文件 hash 清单与变更检查 |
 | `assemble_batch.py` | 把 17 节骨架和完整章节片段确定性组装，局部返工只换片段 |
@@ -449,7 +449,7 @@ V1（判据停在 2.14）专注"第一册源码讲解"，V2 在此之上补了�
 - [安装与执行边界](skills/replicate-learning/docs/安装与执行边界.md) — 能保证什么 / 不能保证什么
 - [V2 执行协议](skills/replicate-learning/references/V2执行协议.md) — 每次开工/续传先读
 - [操作手册：闸门与工具](skills/replicate-learning/spec/操作手册-闸门与工具.md) — 每天干活时读
-- [血证档案](skills/replicate-learning/spec/血证档案.md) — H1~H28，想放宽判据前必读
+- [血证档案](skills/replicate-learning/spec/血证档案.md) — H1~H29，想放宽判据前必读
 - [质量契约 SSOT](skills/replicate-learning/spec/00-质量契约.json) — 单一真源
 - [七阶段工作流](skills/replicate-learning/spec/阶段工作流.md)
 - [V2 试运行手册](skills/replicate-learning/docs/V2试运行手册.md)

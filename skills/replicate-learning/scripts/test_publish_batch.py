@@ -7,6 +7,7 @@ Acceptance from the plan:
   * a nested git repo only ever receives the files named in the record.
 """
 
+import contextlib
 import io
 import json
 import os
@@ -24,10 +25,17 @@ from test_gate_result import good_result
 
 LEDGERS = {
     "NOTES/项目文件覆盖矩阵.md": "# 覆盖矩阵\n\n| 文件 | 状态 |\n|---|---|\n| 旧件 | 已讲 |\n\n尾注。\n",
-    "NOTES/总索引.md": "# 总索引\n\n## 批次清单\n\n- 阶段3批次47 已归档\n",
+    "NOTES/总索引.md": ("# 总索引\n\n## 批次清单\n\n- 阶段3批次47 已归档\n\n"
+                        "| 批次 | 标题 | 判据 | 状态 |\n|---|---|---|---|\n"
+                        "| 批次47 | 智能切片 | 判据 v2.29 | 已验收 |\n"
+                        "| 批次49 | 切片收口与装配 | 判据 v2.30 | 已验收 |\n"),
     "NOTES/阶段3-切分方案.md": "# 阶段3\n\n## 本阶段进度\n\n- 批次47 完成\n",
     "NOTES/复刻状态-下一步.md": "# 精简状态\n\n> 状态：进行中\n\n下一批：阶段3批次48\n",
 }
+
+# 回修场景的真实形态：判据 2.30 → 2.31 之后，总索引里那一行还印着旧版本号。
+OLD_ROW = "| 批次49 | 切片收口与装配 | 判据 v2.30 | 已验收 |"
+NEW_ROW = "| 批次49 | 切片收口与装配 | 判据 v2.31 | 已验收 |"
 
 
 def make_project(tmp, lecture=True):
@@ -376,6 +384,185 @@ class PublishTests(unittest.TestCase):
         rec["book"] = 2
         self.write_record(rec)
         self.assertEqual(self.run_publish(["--apply"]), 1)
+
+
+class UpdateLineTests(unittest.TestCase):
+    """回修**已发布行**（判据 2.30 → 2.31 之后，派生视图里行内的旧版本号必须跟着改）。
+
+    为什么需要第五种 op（实现模型在批次49 的反馈）：`publish_batch` 原本只有四种"首次发布"op，
+    回修已发布批次的既有行**没有对应通道**，只能另写一次性脚本——而那正是本工具存在的理由
+    （逐处找锚点的一次性脚本会留下互相矛盾的状态）。旧 op 也表达不了这件事：
+      · `replace_anchor` 拿旧行当锚点，回修一次后锚点消失 → **重复运行报"锚点命中 0 处"**（不幂等）；
+      · `idempotent_key` 在回修场景里必然已在文件中（对象本来就是已发布批次）→ 按 key 跳过 =
+        **回修静默不生效**。
+    所以 `update_line` 的幂等按**目标行现状**判（行==text 跳过 / 行==expect 改 / 其他中止），
+    并要求 anchor 在回修后仍唯一命中（否则幂等不可判定）。
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root, self.lec, self.final = make_project(self.tmp.name)
+        self.record_path = self.root / "batch_record.json"
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def repair_record(self, targets, **overrides):
+        rec = make_record(self.root, self.lec, self.final, targets=targets)
+        rec.update(overrides)
+        return rec
+
+    def write_record(self, rec):
+        self.record_path.write_text(json.dumps(rec, ensure_ascii=False, indent=1), encoding="utf-8")
+
+    def run_publish(self, extra=("--apply",)):
+        argv = sys.argv
+        sys.argv = ["publish_batch.py", "--record", str(self.record_path)] + list(extra)
+        try:
+            with contextlib.redirect_stdout(io.StringIO()) as buf:
+                rc = P.main()
+            return rc, buf.getvalue()
+        finally:
+            sys.argv = argv
+
+    def index(self):
+        return (self.root / "NOTES/总索引.md").read_text(encoding="utf-8")
+
+    def snapshot(self):
+        return {rel: (self.root / rel).read_text(encoding="utf-8") for rel in LEDGERS}
+
+    def target(self, **override):
+        t = {"file": "NOTES/总索引.md", "op": "update_line",
+             "anchor": "| 批次49 |", "expect": OLD_ROW, "text": NEW_ROW}
+        t.update(override)
+        return t
+
+    def test_repair_rewrites_the_published_line(self):
+        self.write_record(self.repair_record([self.target()]))
+        rc, out = self.run_publish()
+        self.assertEqual(rc, 0, out)
+        self.assertIn(NEW_ROW, self.index())
+        self.assertNotIn("判据 v2.30", self.index())
+        self.assertIn("回修锚点行", out)
+
+    def test_repair_is_idempotent_on_rerun(self):
+        """回修通道必须自己幂等——否则第二次发布会报冲突（旧 op 的形态）。"""
+        self.write_record(self.repair_record([self.target()]))
+        self.assertEqual(self.run_publish()[0], 0)
+        after = self.snapshot()
+        rc, out = self.run_publish()
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.snapshot(), after, "重复回修必须零变化")
+        self.assertIn("该行已是回修后的内容", out)
+
+    def test_repair_does_not_depend_on_the_idempotent_key(self):
+        """回修对象本来就是已发布批次 → `idempotent_key` 必然已在文件中。
+
+        若照旧按 key 跳过，回修会"成功返回但什么都没改"（静默不生效）——这正是要避免的形态。
+        """
+        self.write_record(self.repair_record([self.target(idempotent_key="批次49")]))
+        self.assertIn("批次49", self.index())
+        rc, out = self.run_publish()
+        self.assertEqual(rc, 0, out)
+        self.assertIn(NEW_ROW, self.index(), "带 idempotent_key 的回修被当成'已发布过'跳过了")
+
+    def test_repair_with_wrong_expect_aborts_and_writes_nothing(self):
+        self.write_record(self.repair_record([self.target(expect="| 批次49 | 别的标题 | 判据 v2.30 | 已验收 |")]))
+        before = self.snapshot()
+        rc, out = self.run_publish()
+        self.assertEqual(rc, 1)
+        self.assertEqual(self.snapshot(), before, "expect 不符时必须一个文件都不动")
+        self.assertIn("expect 不符", out)
+
+    def test_expect_must_be_the_whole_line_not_a_substring(self):
+        """`replace_anchor` 的 expect 是**子串**语义；回修改的是整行，所以这里必须是整行原文。
+
+        允许子串 = 允许"没读过这一行就改掉它"——回修恰恰是最需要"我知道这行现在是什么"的动作。
+        """
+        self.write_record(self.repair_record([self.target(expect="判据 v2.30")]))
+        before = self.snapshot()
+        rc, out = self.run_publish()
+        self.assertEqual(rc, 1)
+        self.assertEqual(self.snapshot(), before)
+        self.assertIn("整行", out)
+
+    def test_anchor_that_cannot_survive_the_repair_is_refused(self):
+        """anchor 必须是回修后仍在的定位串；否则下次运行找不到它 → 幂等不可判定。"""
+        self.write_record(self.repair_record([self.target(anchor=OLD_ROW)]))
+        before = self.snapshot()
+        rc, out = self.run_publish()
+        self.assertEqual(rc, 1, "锚点回修后消失仍被接受——回修通道不幂等")
+        self.assertEqual(self.snapshot(), before)
+        self.assertIn("回修后命中 0 处", out)
+
+    def test_repair_requires_expect_and_text(self):
+        for drop in ("expect", "text"):
+            with self.subTest(drop=drop):
+                t = self.target()
+                t.pop(drop)
+                self.write_record(self.repair_record([t]))
+                before = self.snapshot()
+                rc, out = self.run_publish()
+                self.assertEqual(rc, 1, "缺 %s 仍被接受" % drop)
+                self.assertEqual(self.snapshot(), before)
+                self.assertIn(drop, out)
+
+    def test_repair_refuses_multiline_text(self):
+        """一次只改一行：多行会让"这行改没改过"无法判定（块改动走 insert/replace）。"""
+        self.write_record(self.repair_record([self.target(text=NEW_ROW + "\n| 追加 | 行 |")]))
+        before = self.snapshot()
+        rc, out = self.run_publish()
+        self.assertEqual(rc, 1)
+        self.assertEqual(self.snapshot(), before)
+        self.assertIn("只改一行", out)
+
+    def test_repair_refuses_a_no_op_target(self):
+        self.write_record(self.repair_record([self.target(text=OLD_ROW)]))
+        before = self.snapshot()
+        rc, out = self.run_publish()
+        self.assertEqual(rc, 1)
+        self.assertEqual(self.snapshot(), before)
+        self.assertIn("不需要回修", out)
+
+    def test_repair_mixes_with_first_publish_targets_on_the_same_file(self):
+        """同一文件里"补一行"与"回修一行"共存：按文件分组、串行叠加，两条都要落盘。"""
+        self.write_record(self.repair_record([
+            {"file": "NOTES/总索引.md", "op": "ensure_line", "idempotent_key": "批次48 已归档",
+             "text": "- 阶段3批次48 已归档"},
+            self.target(idempotent_key="批次49"),
+        ]))
+        rc, out = self.run_publish()
+        self.assertEqual(rc, 0, out)
+        self.assertIn("- 阶段3批次48 已归档", self.index())
+        self.assertIn(NEW_ROW, self.index())
+
+    def test_repair_is_all_or_nothing_across_files(self):
+        rec = self.repair_record([
+            self.target(),
+            {"file": "NOTES/阶段3-切分方案.md", "op": "insert_before_anchor",
+             "anchor": "这一行根本不存在", "text": "- x"},
+        ])
+        self.write_record(rec)
+        before = self.snapshot()
+        self.assertEqual(self.run_publish()[0], 1)
+        self.assertEqual(self.snapshot(), before, "另一处冲突时，回修也不许先落盘")
+
+    def test_repair_preview_writes_nothing(self):
+        self.write_record(self.repair_record([self.target()]))
+        before = self.snapshot()
+        rc, out = self.run_publish(extra=())          # 缺省 dry-run
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.snapshot(), before)
+        self.assertIn("未写盘", out)
+
+    def test_repair_needs_a_passing_gate_like_any_other_publish(self):
+        """回修也是发布：讲义哈希 / 门禁最终记录照样要先验后写。"""
+        self.final.write_text(json.dumps({"pass": False, "final_lecture_sha256":
+                                          LC.sha256_file(self.lec)}), encoding="utf-8")
+        self.write_record(self.repair_record([self.target()]))
+        before = self.snapshot()
+        self.assertEqual(self.run_publish()[0], 1)
+        self.assertEqual(self.snapshot(), before)
 
 
 class GitAddTests(unittest.TestCase):

@@ -275,7 +275,8 @@ def main():
         io.open(lec_copy, 'w', encoding='utf-8', newline='').write(
             '\n'.join(lines[:s9] + sec9.rstrip('\n').split('\n') + lines[e9:]))
         io.open(os.path.join(proj, 'NOTES', '覆盖矩阵.md'), 'w', encoding='utf-8', newline='').write(
-            '# 覆盖矩阵\n\n| 文件 | 状态 |\n|---|---|\n| 旧件 | 已讲 |\n')
+            '# 覆盖矩阵\n\n| 文件 | 状态 |\n|---|---|\n| 旧件 | 已讲 |\n\n'
+            '## 版本台账\n\n| 批次 | 判据 |\n|---|---|\n| 批次47 | 判据 v2.29 |\n')
         io.open(os.path.join(proj, 'NOTES', '状态.md'), 'w', encoding='utf-8', newline='').write(
             '# 状态\n\n下一批：阶段3批次48\n')
         phase('gate', lambda: run([tool('gate_lecture.py'), lec_copy, '--src', RAGENT,
@@ -320,6 +321,45 @@ def main():
                           head=''))
         if not ok:
             mismatches.append('同一文件两条更新未同时落盘：%r' % state_text[-60:])
+
+        # ── 回修已发布行（update_line）：判据 2.30 → 2.31 后，台账里那一行还印着旧版本号 ──
+        # 这是实现模型在批次49 报的通道缺口：旧 op 表达不了"改一行已发布内容"——
+        # `replace_anchor` 回修一次后锚点消失（重复运行必冲突），带 idempotent_key 则静默跳过。
+        repair = dict(record)
+        repair["targets"] = [
+            {"file": "NOTES/覆盖矩阵.md", "op": "update_line", "anchor": "| 批次47 |",
+             "expect": "| 批次47 | 判据 v2.29 |", "text": "| 批次47 | 判据 v2.31 |",
+             "idempotent_key": "批次47"}]      # key 已在文件中（回修对象本来就是已发布批次）
+        rep_path = os.path.join(work, 'repair_record.json')
+        io.open(rep_path, 'w', encoding='utf-8', newline='').write(
+            json.dumps(repair, ensure_ascii=False, indent=1))
+        matrix = os.path.join(proj, 'NOTES', '覆盖矩阵.md')
+        phase('repair', lambda: run([tool('publish_batch.py'), '--record', rep_path]),
+              '回修预览（dry-run）', expect_out=['未写盘'])
+        phase('repair', lambda: run([tool('publish_batch.py'), '--record', rep_path, '--apply']),
+              '回修已发布行（update_line，带 idempotent_key 不得被误跳过）',
+              expect_out=['回修锚点行'])
+        phase('repair', lambda: run([tool('publish_batch.py'), '--record', rep_path, '--apply']),
+              '重复回修（应按目标行现状判幂等 → 零变化）', expect_out=['该行已是回修后的内容'])
+        bad = json.loads(json.dumps(repair))
+        bad["targets"][0]["expect"] = "判据 v2.31"           # 子串，不是这一行的整行原文
+        bad["targets"][0]["text"] = "| 批次47 | 判据 v2.32 |"
+        bad_path = os.path.join(work, 'repair_bad.json')
+        io.open(bad_path, 'w', encoding='utf-8', newline='').write(
+            json.dumps(bad, ensure_ascii=False, indent=1))
+        before_bytes = io.open(matrix, 'rb').read()
+        phase('repair', lambda: run([tool('publish_batch.py'), '--record', bad_path, '--apply']),
+              'CLI 负向：expect 抄成子串 → 中止（回修不许盲改）', expect_rc=1,
+              expect_out=['expect 不符'])
+        after_text = io.open(matrix, encoding='utf-8').read()
+        ok = io.open(matrix, 'rb').read() == before_bytes and '| 批次47 | 判据 v2.31 |' in after_text
+        steps.append(dict(phase='repair', rc=0 if ok else 1, ms=0.0,
+                          note='回修落盘 + 子串 expect 被拒时文件字节不变（内容断言）',
+                          expect_rc=[0], expect_out=[], ok=ok,
+                          problems=[] if ok else ['覆盖矩阵未按回修预期：%r' % after_text[-120:]],
+                          head=''))
+        if not ok:
+            mismatches.append('回修内容断言失败：%r' % after_text[-120:])
     else:
         print('[SKIP] 没找到 %s —— 跳过依赖真实教材的门禁/盖章/发布步骤（设 RAGENT_ROOT 可指定）'
               % REAL_LEC)

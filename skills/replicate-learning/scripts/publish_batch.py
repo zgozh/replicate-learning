@@ -22,7 +22,23 @@
      已写入的文件，不留半套状态；
   6. `--git-add` 只 `git add --` 本批记录里的文件（**绝不 `git add -A`**）。
 
-幂等：记录里的 `targets[].idempotent_key` 已在文件中出现 = 这条已经发布过 → 跳过（重复运行零变化）。
+**首次发布 vs 回修**（同一条生命周期上分两半，用两套 op）：
+
+  · **首次发布**：`append_section` / `insert_before_anchor` / `replace_anchor` / `ensure_line`。
+    幂等靠 `targets[].idempotent_key`：它已在文件中出现 = 这条已经发布过 → 跳过（重复运行零变化）。
+  · **回修已发布行**：`update_line`。判据版本从 2.30 升到 2.31 之后，派生视图里那些"行内印着旧
+    版本号"的行必须跟着改——**这既不是"发布"，旧 op 也表达不了**：`replace_anchor` 拿旧行当锚点，
+    回修成功后锚点就没了，**重复运行会报"锚点命中 0 处"**（幂等不成立，回修通道等于没有）；
+    而 `idempotent_key` 在回修场景里必然已在文件中（回修对象本来就是已发布批次），照旧按 key
+    跳过等于**静默不生效**。所以 `update_line` 另立一套语义：
+
+        anchor  回修**之后仍然存在**的定位串（必须唯一命中；旧行原文属于 expect，不是 anchor）
+        expect  该行**当前的整行原文**（整行比对，允许首尾空白差异）
+        text    回修后的整行（不许含换行——多行请用 insert/replace_anchor）
+
+    幂等按**目标行现状**判定，与 `idempotent_key` 无关：行 == text → 跳过（已回修过）；
+    行 == expect → 改；其余 → 中止（不许盲改）。回修后锚点必须仍唯一命中，否则中止：
+    下次运行将无法判定"改没改过"，幂等就是一句空话。
 """
 import argparse
 import difflib
@@ -38,6 +54,11 @@ sys.path.insert(0, HERE)
 import lecture_checks as LC          # noqa: E402
 
 DEFAULT_LOG_DIR = 'NOTES/.replicate-learning'
+
+# 四种"首次发布"op + 一种"回修已发布行"op（见模块文档：两半生命周期，两套幂等口径）。
+OPS = ('append_section', 'insert_before_anchor', 'replace_anchor', 'ensure_line',
+       'update_line')
+REPAIR_OPS = ('update_line',)
 
 
 def contract_version():
@@ -96,10 +117,21 @@ def check_record(rec):
     for t in targets:
         if not t.get('file') or not t.get('op'):
             raise Conflict('target 缺 file/op：%r' % t)
-        if t['op'] not in ('append_section', 'insert_before_anchor', 'replace_anchor', 'ensure_line'):
+        if t['op'] not in OPS:
             raise Conflict('未知 op：%r' % t['op'])
-        if t['op'] in ('insert_before_anchor', 'replace_anchor') and not t.get('anchor'):
+        if t['op'] in ('insert_before_anchor', 'replace_anchor', 'update_line') and not t.get('anchor'):
             raise Conflict('%s 需要 anchor：%r' % (t['op'], t.get('file')))
+        if t['op'] in REPAIR_OPS:
+            # 回修是**改已发布内容**，比追加严格：三件（anchor/expect/text）缺一不可，
+            # 且 expect 与 text 都必须是单行——否则"这行到底改没改过"无法判定，幂等失效。
+            for field, human in (('expect', '该行当前的整行原文'), ('text', '回修后的整行')):
+                if not str(t.get(field) or '').strip():
+                    raise Conflict('update_line 缺 %s（%s）：%r' % (field, human, t.get('file')))
+            if '\n' in str(t['expect']).strip('\n') or '\n' in str(t['text']).strip('\n'):
+                raise Conflict('update_line 一次只改一行：expect/text 都不许含换行'
+                               '（整块改动用 replace_anchor 或 insert_before_anchor）：%r' % t['file'])
+            if str(t['expect']).strip() == str(t['text']).strip():
+                raise Conflict('update_line 的 expect 与 text 相同——这一行不需要回修：%r' % t['file'])
     return root, targets
 
 
@@ -199,10 +231,12 @@ def check_evidence(rec, root):
 
 def apply_target(text, t):
     """把一条 target 作用到文件文本上，返回 (新文本, 是否变化, 说明)。冲突抛 Conflict。"""
-    key = t.get('idempotent_key')
-    if key and key in text:
-        return text, False, '已发布过（幂等跳过）'
     op = t['op']
+    key = t.get('idempotent_key')
+    # update_line 的幂等由**目标行现状**判定，不看 idempotent_key：回修的对象本来就是已发布批次，
+    # key 必然已在文件中——照旧按 key 跳过就等于"回修静默不生效"（本 op 存在的理由正是这个）。
+    if key and key in text and op not in REPAIR_OPS:
+        return text, False, '已发布过（幂等跳过）'
     block = t.get('text') or ''
     if op == 'append_section':
         new = text if text.endswith('\n') else text + '\n'
@@ -222,6 +256,26 @@ def apply_target(text, t):
         lines = text.split('\n')
         lines[at:at] = block.rstrip('\n').split('\n')
         return '\n'.join(lines), True, '在锚点前插入 %d 行' % (block.rstrip('\n').count('\n') + 1)
+    if op in REPAIR_OPS:
+        lines = text.split('\n')
+        cur, new_line = lines[at], block.strip('\n')
+        if cur.strip() == new_line.strip():
+            return text, False, '该行已是回修后的内容（幂等跳过）'
+        if cur.strip() != str(t['expect']).strip('\n').strip():
+            raise Conflict('锚点行现状与 expect 不符（回修不许盲改）：\n'
+                           '     现在：%r\n     期望：%r\n'
+                           '     → 文件已被改过，或 expect 抄的不是这一行的整行原文（期望是整行，'
+                           '不是子串）；按现状核对后改记录再跑。' % (cur[:100], str(t['expect'])[:100]))
+        lines[at] = new_line
+        after = '\n'.join(lines)
+        # 幂等可判定性护栏：回修后锚点必须仍唯一命中，否则**下一次运行找不到锚点** →
+        # "已回修过"与"记录写错"分不开，重复运行必报冲突。宁可现在中止，也不留一个假幂等。
+        hits2 = [i for i, l in enumerate(after.split('\n')) if anchor in l]
+        if len(hits2) != 1:
+            raise Conflict('锚点回修后命中 %d 处（应为 1）——update_line 的 anchor 必须是**回修后仍然'
+                           '存在**的定位串（旧行原文属于 expect）；否则重复运行无法判定幂等：'
+                           '%r @ %s' % (len(hits2), anchor[:60], t['file']))
+        return after, True, '回修锚点行（1 行）'
     if t.get('expect') and t['expect'] not in text.split('\n')[at]:
         raise Conflict('锚点行的预期状态不符：期望含 %r，实际 %r' % (t['expect'], text.split('\n')[at][:80]))
     lines = text.split('\n')

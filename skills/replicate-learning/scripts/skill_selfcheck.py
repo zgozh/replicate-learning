@@ -1425,7 +1425,8 @@ def check_publish(r):
         root = os.path.join(tmp, 'proj')
         os.makedirs(os.path.join(root, 'NOTES'))
         io.open(os.path.join(root, 'NOTES', '覆盖矩阵.md'), 'w', encoding='utf-8', newline='').write(
-            '# 覆盖矩阵\n\n| 文件 | 状态 |\n|---|---|\n| 旧件 | 已讲 |\n')
+            '# 覆盖矩阵\n\n| 文件 | 状态 |\n|---|---|\n| 旧件 | 已讲 |\n\n'
+            '## 版本台账\n\n| 批次 | 判据 |\n|---|---|\n| 批次49 | 判据 v2.30 |\n')
         io.open(os.path.join(root, 'NOTES', '状态.md'), 'w', encoding='utf-8', newline='').write(
             '# 状态\n\n下一批：阶段3批次47\n')
         lec = os.path.join(root, 'NOTES', '批次48.md')
@@ -1512,6 +1513,51 @@ def check_publish(r):
                 r.fail('发布器：同一文件的多条更新互相覆盖了 → %r' % text[-80:])
         else:
             r.fail('发布器：同一文件的多条更新执行失败')
+
+        # ── 回修已发布行（update_line，实现模型在批次49 反馈的通道缺口）──
+        # 判据 2.30 → 2.31 之后，派生视图里行内还印着旧版本号；旧 op 表达不了这件事：
+        # `replace_anchor` 用旧行当锚点，回修一次后锚点消失 → 重复运行必报冲突（回修不幂等）。
+        repair = record([{"file": "NOTES/覆盖矩阵.md", "op": "update_line", "anchor": "| 批次49 |",
+                          "expect": "| 批次49 | 判据 v2.30 |", "text": "| 批次49 | 判据 v2.31 |",
+                          "idempotent_key": "批次49"}])          # key 必然已在文件中（回修对象已发布）
+        rc_rep = run(repair)
+        mtx = lambda: io.open(os.path.join(root, 'NOTES', '覆盖矩阵.md'), encoding='utf-8').read()
+        if rc_rep == 0 and '| 批次49 | 判据 v2.31 |' in mtx():
+            r.ok('发布器：回修已发布行（判据 v2.30 → v2.31）落盘，且不被 idempotent_key 误跳过')
+        else:
+            r.fail('发布器：update_line 未生效（rc=%s）→ 回修只能另写一次性脚本' % rc_rep)
+        after_rep = snap()
+        if run(repair) == 0 and snap() == after_rep:
+            r.ok('发布器：重复回修零变化（幂等按**目标行现状**判，不靠 idempotent_key）')
+        else:
+            r.fail('发布器：回修通道不幂等——第二次运行改动了文件或报冲突')
+        before_bad = snap()
+        for tag, bad in (
+                ('expect 抄错（写成子串而非整行）',
+                 {"anchor": "| 批次49 |", "expect": "判据 v2.31", "text": "| 批次49 | 判据 v2.32 |"}),
+                ('anchor 回修后不再命中（幂等不可判定）',
+                 {"anchor": "判据 v2.31", "expect": "| 批次49 | 判据 v2.31 |",
+                  "text": "| 批次49 | 判据 2.31（新版） |"}),
+                ('缺 expect',
+                 {"anchor": "| 批次49 |", "text": "| 批次49 | 判据 v2.32 |"}),
+                ('text 含换行（一次要改多行）',
+                 {"anchor": "| 批次49 |", "expect": "| 批次49 | 判据 v2.31 |", "text": "a\nb"})):
+            t = {"file": "NOTES/覆盖矩阵.md", "op": "update_line"}
+            t.update(bad)
+            if run(record([t])) != 0 and snap() == before_bad:
+                r.ok('发布器回修护栏：%s → 中止且一个文件都不动' % tag)
+            else:
+                r.fail('发布器回修护栏失效：%s 仍被接受（盲改已发布内容 / 幂等不可判定）' % tag)
+        # 工具与文档同源：手册 §22 与 SKILL 都要写明第五种 op（防"工具加了 op、手册还写四种"）
+        man = io.open(os.path.join(ROOT, 'spec', '操作手册-闸门与工具.md'), encoding='utf-8').read()
+        skill = io.open(os.path.join(ROOT, 'SKILL.md'), encoding='utf-8').read()
+        stale = [name for name, txt in (('手册', man), ('SKILL', skill)) if 'op 四种' in txt]
+        if (PB.OPS[-1] == 'update_line' and 'update_line' in man and 'update_line' in skill
+                and not stale):
+            r.ok('发布器：五种 op 与文档同源（手册 §22 / SKILL 都写明 update_line 回修通道）')
+        else:
+            r.fail('发布器文档未同源：OPS[-1]=%s ｜ 手册有=%s ｜ SKILL 有=%s ｜ 仍写「op 四种」=%s'
+                   % (PB.OPS[-1], 'update_line' in man, 'update_line' in skill, stale or '无'))
 
         # 发布入口必须核对**完整结论**：最终记录 pass=true 但退出码非 0 / 标记已回滚都不许发布
         before_final = io.open(final, encoding='utf-8').read()
