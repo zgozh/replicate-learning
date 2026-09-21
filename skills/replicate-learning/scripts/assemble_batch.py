@@ -15,6 +15,24 @@ from pathlib import Path
 
 HEADING = re.compile(r"^## (.+?)\s*$")
 FENCE = re.compile(r"^\s*(`{3,}|~{3,})(.*)$")
+CIRCLED = "①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯"
+
+
+def section_key(heading):
+    """章节的**身份键**：带圈数字（或「索引」）优先，标题措辞只是后缀。
+
+    为什么需要它（2.31 实测）：⑨ 由「No-Framework 等价实现」改名为「八股讲解」后，
+    旧分片里写的 `## ⑨ No-Framework 等价实现` 与骨架的 `## ⑨ 八股讲解…` 标题不同 →
+    原实现直接 `ValueError`。**节的身份是编号，不是标题措辞**（2.30 那轮"节标题统一"
+    也踩过同一类问题）；标题不同时按编号匹配并**打印告警**，让人知道两处标题不一致。
+    """
+    body = heading[3:].strip() if heading.startswith("## ") else heading.strip()
+    for ch in CIRCLED:
+        if body.startswith(ch):
+            return ch
+    if body.startswith("索引"):
+        return "索引"
+    return body
 
 
 def split_sections(document, *, allow_preamble):
@@ -53,15 +71,27 @@ def assemble(base, parts, *, expected_sections=17):
     preamble, sections = split_sections(base, allow_preamble=True)
     if len(sections) != expected_sections:
         raise ValueError("骨架章节数 %d，预期 %d" % (len(sections), expected_sections))
+    by_key = {}
+    for heading in sections:
+        key = section_key(heading)
+        if key in by_key:
+            raise ValueError("骨架里有两个同编号章节：%s / %s" % (by_key[key], heading))
+        by_key[key] = heading
     replacements = {}
     for part in parts:
         _, parsed = split_sections(part, allow_preamble=False)
         for heading, body in parsed.items():
-            if heading not in sections:
-                raise ValueError("片段章节未在骨架中：" + heading)
-            if heading in replacements:
-                raise ValueError("章节重复提交：" + heading)
-            replacements[heading] = body
+            target = heading
+            if target not in sections:
+                key = section_key(heading)
+                if key not in by_key:
+                    raise ValueError("片段章节未在骨架中：" + heading)
+                target = by_key[key]
+                print("[WARN] 片段标题与骨架不一致，按节号匹配：\n       片段 %s\n       骨架 %s"
+                      % (heading.strip(), target.strip()))
+            if target in replacements:
+                raise ValueError("章节重复提交：" + target)
+            replacements[target] = body
     output = preamble + "".join(replacements.get(h, body) for h, body in sections.items())
     _, final_sections = split_sections(output, allow_preamble=True)
     if len(final_sections) != expected_sections:

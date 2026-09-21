@@ -507,6 +507,45 @@ def check_new_batch(r):
                       ('⑫ 八段提示词 = 8', len(re.findall(r'^【[^】]+】', seg12, re.M)) == 8)):
         (r.ok if cond else r.fail)('骨架 %s' % tag if cond else '骨架缺 %s' % tag)
 
+    # 件内顺序必须与模板一致（2.30 修复 · 批次49 实录）：三段开场 → 源码块 → 逐行要点表。
+    # 生成骨架的 `plan_section` 曾把槽位标记/空围栏排在三段开场**之前**，模型照着写 → 整批 ⑥ 的
+    # "代码块前的讲解"全跑到代码块后面。判据 = **相对顺序**（模板里没有槽位标记，故不参与比较）。
+    ANCHORS = (r'^\*\*本文件要解决的一个问题\*\*', r'^\*\*白话开场\*\*',
+               r'^\*\*构造方式与手法\*\*', r'^```', r'^\*\*逐行要点表\*\*')
+
+    def _item_marks(txt):
+        m = re.search(r'^#### 6\.1.*?(?=^#### 6\.2|\Z)', txt or '', re.M | re.S)
+        seg = m.group(0) if m else ''
+        marks = []
+        for pat in ANCHORS:
+            mm = re.search(pat, seg, re.M)
+            marks.append(mm.start() if mm else None)
+        slot = re.search(r'<!--\s*src-slot', seg)
+        return marks, (slot.start() if slot else None)
+
+    tpl_marks, _tpl_slot = _item_marks(tpl)
+    skel_marks, skel_slot, mini = None, None, tempfile.mkdtemp(prefix='plan_order_')
+    try:
+        os.makedirs(os.path.join(mini, 'mod/src/main/java/demo'))
+        io.open(os.path.join(mini, 'mod/src/main/java/demo/Foo.java'), 'w', encoding='utf-8',
+                newline='').write('package demo;\n\nclass Foo {\n}\n')
+        _lines = list(N.skeleton_lines(notes=[]))
+        N.plan_section(_lines, {'blocks': [{'src': 'mod/src/main/java/demo/Foo.java', 'seg': '6.1',
+                                            'anchor': '#### 6.1 `Foo`'}]}, mini)
+        skel_marks, skel_slot = _item_marks('\n'.join(_lines))
+    except Exception as exc:                              # pragma: no cover
+        r.fail('plan_section 件内顺序自测跑不起来：%s' % exc)
+    finally:
+        shutil.rmtree(mini, ignore_errors=True)
+    asc = lambda ms: None not in ms and ms == sorted(ms)   # noqa: E731
+    slot_ok = (skel_slot is not None and skel_marks[2] is not None
+               and skel_marks[2] < skel_slot < skel_marks[3])
+    if asc(tpl_marks) and asc(skel_marks) and slot_ok:
+        r.ok('件内顺序与模板同源：三段开场 → 槽位/源码块 → 逐行要点表（批次49 的错序不会复发）')
+    else:
+        r.fail('件内顺序被改坏：模板 %s ｜ 骨架 %s（槽位应在第三段开场与源码块之间）'
+               % (tpl_marks, skel_marks))
+
 
 def check_inject_source(r):
     """⑩ 源码块注入器端到端自测（H17/H18 的主力工具）：在临时目录里造一个迷你仓库 + 讲解 + plan，
@@ -1346,6 +1385,25 @@ def check_structured_result(r):
             r.ok('版本门：规范声明后补「历史判据 v2.17」不降档（声明不被后续说明覆盖）')
         else:
             r.fail('历史版本说明覆盖了声明：%s vs %s' % (G.style_scope(pre), G.style_scope(hist)))
+
+        # ⑨ 八股讲解（2.31 · SSOT S25 · G-KNOW）：合格样本要 PASS，缺落点/条数不足要判得出来
+        good = ['## ⑨ 八股讲解（本批涉及的面试与工程常识）', '']
+        for _i in range(1, 7):
+            good += ['**考点 %d**' % _i, '', '- **【考点】** 面试官会怎么问 %d' % _i,
+                     '- **【一句话定义】** 标准答法', '- **【为什么考】** 考的是边界处理能力【外部事实】',
+                     '- **【本批落点】** `6.%d` 的 `:L%d`' % (_i, 40 + _i), '']
+        good += ['**本批八股速查表**', '', '| 考点 | 一句话答 | 本批落点 |', '|---|---|---|',
+                 '| 切分策略 | 固定/递归/语义 | `6.1 :L41` |']
+        kn_good = G.check_know('\n'.join(good))
+        kn_bad = G.check_know('\n'.join(['## ⑨ 八股讲解', '', '- **【考点】** 只有一条', '']))
+        kn_old = G.check_know('\n'.join(['## ⑨ No-Framework 等价实现', '', '手写版骨架', '']))
+        if (kn_good['items'] == 6 and not kn_good['missing'] and kn_good['link'] and kn_good['table']
+                and kn_good['items'] > kn_bad['items'] and kn_bad['missing'] and kn_old['legacy']):
+            r.ok('⑨ 八股讲解判据：四段齐全 + 回链本批 + 速查表 = 合格；只有考点 / 旧 No-Framework 判得出来')
+        else:
+            r.fail('⑨ 八股讲解判据失准：good=%s ｜ bad=%s ｜ legacy=%s'
+                   % ({k: kn_good[k] for k in ('items', 'missing', 'link', 'table')},
+                      {k: kn_bad[k] for k in ('items', 'missing')}, kn_old['legacy']))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

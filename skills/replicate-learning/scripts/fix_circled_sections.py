@@ -24,7 +24,8 @@ TITLES = [
     "\u9010\u4ef6\u8bb2\u89e3",                                                                # 6
     "\u8c03\u7528\u94fe\u3001\u6570\u636e\u6d41\u3001\u72b6\u6001\u53d8\u5316\u4e0e\u8fb9\u754c",  # 7
     "L0-L4 \u5e95\u5c42\u7a7f\u900f\u5361",                                                    # 8
-    "No-Framework \u7b49\u4ef7\u5b9e\u73b0",                                                  # 9
+    # 9 · 2.31 起是「八股讲解」；存量批次仍是旧标题「No-Framework 等价实现」——两个都认
+    ("\u516b\u80a1\u8bb2\u89e3", "No-Framework \u7b49\u4ef7\u5b9e\u73b0"),                   # 9
     "\u5931\u8d25\u53cd\u4f8b",                                                                # 10
     "\u6d4b\u8bd5\u89c6\u89d2",                                                                # 11
     "Vibecoding \u89c6\u89d2",                                                                 # 12
@@ -50,7 +51,8 @@ def main():
             continue
         text = body.strip()
         for idx, prefix in enumerate(TITLES):
-            if text.startswith(prefix):
+            alts = prefix if isinstance(prefix, tuple) else (prefix,)
+            if any(text.startswith(p) for p in alts):
                 new = "## %s %s" % (CIRCLED[idx], text)
                 fixed.append((i + 1, l, new))
                 lines[i] = new

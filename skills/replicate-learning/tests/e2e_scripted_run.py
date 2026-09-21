@@ -264,13 +264,24 @@ def main():
         os.makedirs(os.path.join(proj, 'NOTES', '教学讲解'))
         lec_copy = os.path.join(proj, 'NOTES', '教学讲解', '批次48-智能切片.md')
         shutil.copyfile(REAL_LEC, lec_copy)
+        # 2.31：真实批次48 副本是 2.30 时代的教材（⑨ 还是 No-Framework）。盖章会把 ⑯ 的版本声明
+        # 刷成当前版（2.31），于是 **G-KNOW 会正确地判 FAIL**（"你声明了 2.31，⑨ 就得是八股讲解"）。
+        # 这里先按当前契约把副本的 ⑨ 换成八股讲解（夹具素材，与批次48 同一批件的落点），
+        # 再走"门禁 → 盖章 → 发布"完整闭环——测的是工具链，不是让旧教材蒙混过关。
+        sec9 = io.open(os.path.join(FIX, 'batch48', 'fixture_sec9_bagu.md'), encoding='utf-8').read()
+        lines = io.open(lec_copy, encoding='utf-8').read().split('\n')
+        s9 = next(k for k, l in enumerate(lines) if re.match(r'^##\s*⑨\s', l))
+        e9 = next(k for k in range(s9 + 1, len(lines)) if re.match(r'^##\s*⑩\s', lines[k]))
+        io.open(lec_copy, 'w', encoding='utf-8', newline='').write(
+            '\n'.join(lines[:s9] + sec9.rstrip('\n').split('\n') + lines[e9:]))
         io.open(os.path.join(proj, 'NOTES', '覆盖矩阵.md'), 'w', encoding='utf-8', newline='').write(
             '# 覆盖矩阵\n\n| 文件 | 状态 |\n|---|---|\n| 旧件 | 已讲 |\n')
         io.open(os.path.join(proj, 'NOTES', '状态.md'), 'w', encoding='utf-8', newline='').write(
             '# 状态\n\n下一批：阶段3批次48\n')
         phase('gate', lambda: run([tool('gate_lecture.py'), lec_copy, '--src', RAGENT,
                                    '--json', os.path.join(work, 'gate_proj.json')]),
-              '门禁（真实批次48 教材副本）', expect_out=['总判定: PASS'])
+              '门禁（真实批次48 教材副本 + ⑨ 升级为八股）',
+              expect_out=['总判定: PASS', '考点'])
         phase('verify', lambda: run([tool('sync_gate_result.py'), lec_copy, '--src', RAGENT,
                                      '--result-json', os.path.join(work, 'gate_proj.json'), '--apply',
                                      '--final-json', os.path.join(proj, 'NOTES', 'b48.final.json')]),

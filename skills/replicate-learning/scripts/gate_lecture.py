@@ -68,7 +68,13 @@ import tarfile
 import subprocess
 import collections
 
-GATE_VERSION = "2.30"    # 2.30：⓪d 增补 E12/E13（用户第五轮要求 · ⑥ 的可复制性）：
+GATE_VERSION = "2.31"    # 2.31：⑨ 由「No-Framework 等价实现」改为**八股讲解**（用户第五轮要求：
+                         #       "No-Framework 我用不上，换成八股——读讲解时顺手把面试考点也学了"）。
+                         #       机械判定 = 条数（≥6，每件至少 1）/ 四段字段（考点·定义·为什么考·本批落点）/
+                         #       回链本批代码 / 「本批八股速查表」四项（G-KNOW）；内容好坏仍由 ⑯ + 人工审读。
+                         #       档位：声明 ≥2.31 判 FAIL；存量 No-Framework 批次走报告档不追溯
+                         #       （只报一句"⑨ 仍是旧版"，不逐项挑刺）。判据全文 = SSOT `S25`。
+                         # 2.30：⓪d 增补 E12/E13（用户第五轮要求 · ⑥ 的可复制性）：
                          #       E12 ⑥ **每件**的【怎么用】须含「可照抄的最小调用」——"怎么用"若只写
                          #           "某处会调用它"，读者仍然照抄不出一次真实调用。锚 = 件区间内命中
                          #           MINSNIP_RE（可照抄的最小调用｜最小可编译实现｜教学合成片段）。
@@ -180,7 +186,7 @@ DOCTYPE_DECL = re.compile(r"^\s*(?:public|private|protected|static|final|\s)*[A-
 LICENSE_HINT = re.compile(r"(Licensed to the Apache|Apache License|WITHOUT WARRANTIES|limitations under the License)")
 EXEMPT = re.compile(
     r"(手写|No-Framework|不用框架|等价实现|反例|反面对照|对照实现|穿透卡|穿透|示例|演示|伪代码"
-    r"|卡[一二三四五六七八九十0-9]|L0-L4|L1-L4|例 \d|Tiny|样例节选)", re.I)
+    r"|八股|面试|卡[一二三四五六七八九十0-9]|L0-L4|L1-L4|例 \d|Tiny|样例节选)", re.I)
 HIST = re.compile(r"(【历史版本|历史版本示例|历史快照|已被阶段\s*\d+)", re.I)
 CJK_LANGS = {"java", "sql", "yaml", "yml", "xml", "properties", "lua", "st", "json"}
 # ── 2.24：语言能力表与非 Java 实检工具 ───────────────────────────────────
@@ -666,7 +672,7 @@ L_ANNO = re.compile(r"(?://|#|--)\s*:L?\d+")   # 两种格式都算"标了行号
 
 
 def is_exempt(sect, h2, mk="", bl=None):
-    """免检判定：小节名或所属一级节名命中免检词，或属于 ⑨ No-Framework 节下的 ### 9.x，
+    """免检判定：小节名或所属一级节名命中免检词（含 2.31 起的「八股/面试」），或 ⑨ 节下的 `### 9.x`，
     或块位于 `**【怎么用】/【怎么接】/【扩展步骤】/【上下游】` 标记之下（教学合成片段）。
     例外：命中标记但块内带行号标注（`// :Lnn` 或作废的 `// :N`）= 声明自己是源码原文 → 不豁免，照常核验。"""
     if EXEMPT.search(sect or "") or EXEMPT.search(h2 or ""):
@@ -1493,6 +1499,45 @@ def snip_scope(lines):
         except ValueError:
             return False, which
     return False, which
+
+
+# ── 检查 ⑨：八股讲解（2.31 取代原「No-Framework 等价实现」） ────────────────
+# 用户第五轮要求：「⑨ No-Framework 我用不上，把这节换成八股讲解——本批涉及的面试八股，
+# 读讲解时顺手就能学到」。判据只判"有没有"（L2 内容契约）：条数、四段字段、回链、速查表；
+# 内容好不好仍由 ⑯ 自检 + 人工审读（同 ⑫ 的分工）。
+KNOW_FAIL_SINCE = "2.31"      # 2.31：⑨ 八股讲解的 FAIL 档起点（存量 No-Framework 不追溯）
+KNOW_FIELDS = ("**【考点】**", "**【一句话定义】**", "**【为什么考】**", "**【本批落点】**")
+KNOW_MIN_ITEMS = 6
+
+
+def know_scope(lines):
+    """2.31：⑨ 八股讲解的适用档位（与 core/form/snip/style 同一套版本门）。"""
+    has_v, which, _ = ver_marker(lines)
+    if has_v and which:
+        try:
+            return float(which) >= float(KNOW_FAIL_SINCE), which
+        except ValueError:
+            return False, which
+    return False, which
+
+
+def check_know(txt):
+    """⑨ 八股讲解的机械判定 → dict(items=, missing=[], link=, table=, legacy=, present=)。
+
+    legacy=True 表示这一节还是旧版「No-Framework 等价实现」（存量批次），只报一句、不逐项挑刺。
+    """
+    seg = _txt_seg(txt, r"^## ⑨\s", r"^## ⑩\s")
+    if seg is None:
+        return dict(items=0, missing=[], link=False, table=False, legacy=False, present=False)
+    legacy = bool(re.search(r"No-?Framework|等价实现", seg))
+    counts = dict((f, seg.count(f)) for f in KNOW_FIELDS)
+    items = counts[KNOW_FIELDS[0]] or len(re.findall(r"^###\s*9\.\d", seg, re.M))
+    missing = [f for f in KNOW_FIELDS[1:] if counts[f] < max(items, 1)]
+    # 回链判据：真的指向本批代码（`6.x` 或 `:Lnn`）——**不能用表头里的「本批落点」四个字蒙混**
+    link = bool(re.search(r":L\d+", seg) or re.search(r"(?:^|[^0-9])6\.\d", seg))
+    table = any(("考点" in l and ("落点" in l or "一句话" in l))
+                for l in seg.split("\n") if l.strip().startswith("|"))
+    return dict(items=items, missing=missing, link=link, table=table, legacy=legacy, present=True)
 
 
 def check_form(lines):
@@ -2588,6 +2633,40 @@ def main():
     else:
         fails_0f = []
 
+    # ⑨ 八股讲解（2.31 取代 No-Framework 等价实现 · FAIL 档由 KNOW 版本门决定）
+    know_strict_txt, know_ver_txt = know_scope(lines)
+    kn_txt = check_know("\n".join(lines))
+    mode_k = ("FAIL 档（本批声明判据版本 v%s ≥ %s）" % (know_ver_txt, KNOW_FAIL_SINCE)) if know_strict_txt \
+        else ("报告档（本批未声明判据版本 ≥ %s，不追溯旧产物；新批由 new_batch 落笔即声明）" % KNOW_FAIL_SINCE)
+    print("\n⑨ 八股讲解（v%s · §6.4 ⑨ · %s）" % (GATE_VERSION, mode_k))
+    if not kn_txt["present"]:
+        print("   ⑨ 段缺失——2.31 起这一节是「本批面试考点 + 定义 + 为什么考 + 本批落点」")
+    elif kn_txt["legacy"]:
+        print("   ⑨ 仍是旧版「No-Framework 等价实现」→ 新批应换为八股讲解（存量不追溯）")
+    else:
+        print("   考点 %d 条 ｜ 四段字段缺 %s ｜ 回链本批代码 %s ｜ 速查表 %s"
+              % (kn_txt["items"], "、".join(kn_txt["missing"]) or "无",
+                 "有" if kn_txt["link"] else "**无**", "有" if kn_txt["table"] else "**无**"))
+    _know_print = []
+    if not kn_txt["present"]:
+        _know_print.append("⑨ 段缺失（2.31 起为「八股讲解」）")
+    elif kn_txt["legacy"]:
+        _know_print.append("⑨ 仍是旧版「No-Framework 等价实现」（2.31 起换为「八股讲解」；存量不追溯）")
+    else:
+        if kn_txt["items"] < KNOW_MIN_ITEMS:
+            _know_print.append("⑨ 考点只有 %d 条（≥%d 条；每件至少 1 条）"
+                               % (kn_txt["items"], KNOW_MIN_ITEMS))
+        for _f in kn_txt["missing"]:
+            _know_print.append("⑨ 有考点缺 %s" % _f)
+        if not kn_txt["link"]:
+            _know_print.append("⑨ 考点没有回链本批代码（本批落点要给 `6.x` 或 `:Lnn`）")
+        if not kn_txt["table"]:
+            _know_print.append("⑨ 缺「本批八股速查表」")
+    for _r in _know_print:
+        print(("   [FAIL] " if know_strict_txt else "   [报告] ") + _r)
+    if not _know_print:
+        print("   → PASS")
+
     # ① 正向
     fid = check_fidelity(blocks, by_class, rev_index)
     chk = [r for r in fid if not r["exempt"]]
@@ -3011,6 +3090,44 @@ def main():
             else:
                 checks.append(LC.make_check("G-BATCH3", LC.NOT_CHECKED, checked=0,
                                             note="本批没有 6.x 逐件小节 → 结构基准门不适用"))
+
+        # ⑨ 八股讲解（2.31）：条数 / 四段字段 / 回链 / 速查表；存量 No-Framework 只报一句
+        know_strict, know_ver = know_scope(lines)
+        kn = check_know("\n".join(lines))
+        know_msgs = []
+        if not kn["present"]:
+            know_msgs.append(("⑨ 段缺失（2.31 起应为「八股讲解」：本批面试考点 + 定义 + 为什么考 + 本批落点）",
+                              LC.FAIL if know_strict else LC.REPORT))
+        elif kn["legacy"]:
+            know_msgs.append(("⑨ 仍是旧版「No-Framework 等价实现」（2.31 起换为「八股讲解」；"
+                              "存量批次不追溯，新批落笔即按新形态）",
+                              LC.FAIL if know_strict else LC.REPORT))
+        else:
+            if kn["items"] < KNOW_MIN_ITEMS:
+                know_msgs.append(("⑨ 八股讲解只有 %d 条考点（≥%d 条；每件至少 1 条）"
+                                  % (kn["items"], KNOW_MIN_ITEMS),
+                                  LC.FAIL if know_strict else LC.REPORT))
+            for f in kn["missing"]:
+                know_msgs.append(("⑨ 有考点缺 %s（每条四段：考点 / 一句话定义 / 为什么考 / 本批落点）" % f,
+                                  LC.FAIL if know_strict else LC.REPORT))
+            if not kn["link"]:
+                know_msgs.append(("⑨ 考点没有回链本批代码（本批落点要给 `6.x` 或 `:Lnn`）——"
+                                  "不回链就成了通用八股百科", LC.FAIL if know_strict else LC.REPORT))
+            if not kn["table"]:
+                know_msgs.append(("⑨ 缺「本批八股速查表」（表头含 考点 + 一句话/落点）",
+                                  LC.FAIL if know_strict else LC.REPORT))
+        _know_checked = kn["items"] if kn["present"] else 0
+        if not kn["present"] or (not know_msgs and not _know_checked):
+            checks.append(LC.make_check("G-KNOW", LC.NOT_CHECKED, checked=0,
+                                        findings=[LC.make_finding(m, severity=s) for m, s in know_msgs],
+                                        note="⑨ 八股讲解：无可核对对象（0 对象不是 PASS）"))
+        else:
+            checks.append(LC.make_check(
+                "G-KNOW", (LC.FAIL if any(s == LC.FAIL for _m, s in know_msgs) else LC.REPORT)
+                if know_msgs else LC.PASS,
+                checked=max(_know_checked, 1),
+                findings=[LC.make_finding(m, severity=s) for m, s in know_msgs],
+                note="⑨ 八股讲解（2.31 版本门：%s）" % know_ver))
 
         # ── ①②③③c④⑤⑥ ──
         fid_findings = []

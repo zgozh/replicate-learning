@@ -21,6 +21,11 @@
 - `expectations.json`：首跑闸门的结论（★ 缺口方法名、5 处密度连段），抄自会话导出。
 - `build_batch48_fixture.py`：从 `D:\ragent-official` 与 `test.md` 重建夹具的脚本（只读原始资料）；
   换机器没有该项目时**直接用已提交的夹具即可**，不必重建。`--check` 只校验不写盘。
+- `fixture_sec9_bagu.md` + `apply_fixture_sec9.py`：**夹具分片的 ⑨ 段升级素材（2.31）**。
+  分片是 2.30 时代的真实素材，⑨ 还是「No-Framework 等价实现」；而骨架由当前模板生成、落笔即声明 2.31，
+  于是重建出来的成品会被 `G-KNOW` 正确地判 FAIL（"声明了 2.31，⑨ 就得是八股讲解"）。
+  这两个文件把分片里的 ⑨ 换成八股讲解（内容是批次48 八件的真实落点），
+  `apply_fixture_sec9.py` 可重复执行，重建夹具后跑一次即可。
 
 ## py_mini/
 
@@ -43,6 +48,10 @@ python skills/replicate-learning/tests/e2e_scripted_run.py --work /tmp/e2e
 没装 ragent-official 时自动跳过依赖真实教材的三步并打印说明（可用 `RAGENT_ROOT` 指定项目根）。
 **它只测脚本侧**：模型写作耗时（investigate/write）在报表里单列为"未记录阶段"，脚本不臆造该数字。
 参考实测值见根目录 `replicate-learning-第二轮提速重构-交付说明.md` §4。
+
+> **重新盖章旧批＝按当前契约从严重判**：`sync_gate_result --apply` 会把 ⑯ 的版本声明刷成当前版，
+> 于是"2.30 时代的教材"重新盖章后会立刻被 2.31 的新要求（⑨ 八股讲解）覆盖判定。
+> e2e 因此先把副本的 ⑨ 换成八股再盖章——**这是有意的语义**，不是绕过：声明即承诺。
 
 ## 已知缺口（诚实记录）
 

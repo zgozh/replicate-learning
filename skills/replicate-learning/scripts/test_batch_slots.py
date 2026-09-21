@@ -72,6 +72,30 @@ class SlotMechanicsTests(unittest.TestCase):
         plan = json.load(io.open(state["annotations"], encoding="utf-8"))
         self.assertEqual([b["slot"] for b in plan["blocks"]], [s["slot"] for s in state["slots"]])
 
+    def test_item_body_keeps_the_template_reading_order(self):
+        """2.30 修复（批次49 实录）：件内顺序 = 三段开场 → 源码块 → 逐行要点表。
+
+        生成骨架的 `plan_section` 曾把槽位标记与空围栏排在三段开场**之前**，
+        模型照着骨架写 → 整批 ⑥ 的"代码块前的讲解"全跑到了代码块后面（批次49 四个件都是）。
+        """
+        skeleton, _state = run_new_batch(self.root, B48 / "b48_inject_plan_fixed.json")
+        text = io.open(skeleton, encoding="utf-8").read()
+        item = text[text.index("#### 6.1"):text.index("#### 6.2")]
+        order = [item.index(mark) for mark in ("**本文件要解决的一个问题**", "**白话开场**",
+                                               "**构造方式与手法**", "<!-- src-slot", "```java",
+                                               "**逐行要点表**")]
+        self.assertEqual(order, sorted(order), "件内顺序被改坏了：%s" % order)
+        self.assertLess(item.index("**构造方式与手法**"), item.index("<!-- src-slot"),
+                        "三段开场必须在源码块之前")
+        self.assertLess(item.index("```java"), item.index("**逐行要点表**"),
+                        "逐行要点表必须在源码块之后")
+        # 与模板同源（模板改了这里也会红）
+        tpl = io.open(SKILL / "references" / "批次讲解全文模板.md", encoding="utf-8").read()
+        seg = tpl[tpl.index("#### 6.1"):]
+        tpl_order = [seg.index(mark) for mark in ("**本文件要解决的一个问题**", "**白话开场**",
+                                                  "**构造方式与手法**", "```java", "**逐行要点表**")]
+        self.assertEqual(tpl_order, sorted(tpl_order), "模板自身的件内顺序也不对：%s" % tpl_order)
+
     def test_slot_injection_is_idempotent(self):
         skeleton, state = run_new_batch(self.root, B48 / "b48_inject_plan_fixed.json")
         plan = state["annotations"]
