@@ -438,6 +438,13 @@ dsh-toolkit 快照提交 `c701e47`（已推送 `origin/main`）；WorkBuddy / Co
 四处仍是 **100 个文件逐文件 SHA256 零差异**，安装位实跑 `skill_selfcheck` **113 项 0 失败 → PASS ✅**、
 `v2_selfcheck` PASS。
 
+**§14 之后的再同步（⑨ 改版 + 件内顺序修复）**：源仓 `3d33f9d` + `091df83`（SSOT 缩进复原，已推送
+`bd5da58..091df83`），dsh-toolkit 快照 `7c5255b`（已推送 `origin/main`）；四处副本 **103 个文件 SHA256 零差异**，
+安装位 `skill_selfcheck` **115 项 0 失败 → PASS ✅**。
+另：批次49 的**分片**（`logs/_tools_20260920/b49_parts/`）也一并修好（⑥ 顺序 + ⑨ 八股），
+否则下次 `batch_build` 重建会把这两个缺陷带回来；该目录与 `NOTES/` 都在 ragent-official 的 `.gitignore` 里，
+不进那一边的版本库。
+
 ## 13. 版本门第二次收紧：声明不被后续说明覆盖（2026-09-20 复查）
 
 ### 13.1 复查发现的口子
